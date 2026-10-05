@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+}
+
+.font-logo {
+  font-family: 'Pacifico', cursive;
+}
+
+.font-cute {
+  font-family: 'Fredoka', cursive, sans-serif;
+}
+
+/* Custom photobooth paper shadow & texture */
+.photobooth-shadow {
+  box-shadow: 0 20px 40px -15px rgba(255, 110, 167, 0.25), 0 0 15px rgba(0, 0, 0, 0.05);
+}
+
+.kiosk-glow {
+  box-shadow: 0 0 30px rgba(255, 110, 167, 0.4);
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #FFF0F5;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #F472B6;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #EC4899;
+}
+
+/* Flash screen animation */
+@keyframes camera-flash {
+  0% { opacity: 0; }
+  50% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.animate-flash {
+  animation: camera-flash 0.35s ease-out forwards;
+}
+
+/* Print CSS */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #print-area, #print-area * {
+    visibility: visible;
+  }
+  #print-area {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 100vw;
+    height: 100vh;
+    margin: 0;
+    padding: 0;
+  }
+}

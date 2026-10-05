@@ -1,0 +1,89 @@
+{
+  "name": "photobooth-kiosk",
+  "productName": "PhotoXinhh",
+  "appId": "com.photoxinhh.kiosk",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host",
+    "electron": "electron .",
+    "electron:dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && cross-env ELECTRON_DEV=true electron .\"",
+    "electron:start": "npm run build && cross-env ELECTRON_DEV=false electron .",
+    "dist:mac": "npm run build && cross-env XDG_CACHE_HOME=\"$PWD/.cache\" ELECTRON_BUILDER_CACHE=\"$PWD/.cache/electron-builder\" electron_config_cache=\"$PWD/.cache/electron\" ELECTRON_CACHE=\"$PWD/.cache/electron\" electron-builder --mac",
+    "dist:win": "npm run build && cross-env XDG_CACHE_HOME=\"$PWD/.cache\" ELECTRON_BUILDER_CACHE=\"$PWD/.cache/electron-builder\" electron_config_cache=\"$PWD/.cache/electron\" ELECTRON_CACHE=\"$PWD/.cache/electron\" electron-builder --win",
+    "dist:all": "npm run build && cross-env XDG_CACHE_HOME=\"$PWD/.cache\" ELECTRON_BUILDER_CACHE=\"$PWD/.cache/electron-builder\" electron_config_cache=\"$PWD/.cache/electron\" ELECTRON_CACHE=\"$PWD/.cache/electron\" electron-builder -mw",
+    "ios:sync": "npm run build && npx cap sync ios",
+    "ios:open": "npx cap open ios"
+  },
+  "build": {
+    "appId": "com.photoxinhh.kiosk",
+    "productName": "PhotoXinhh",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.photography"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "PhotoXinhh Kiosk"
+    }
+  },
+  "dependencies": {
+    "@capacitor-community/bluetooth-le": "^8.3.0",
+    "@capacitor/core": "^8.5.2",
+    "canvas-confetti": "^1.9.4",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.16.0",
+    "peerjs": "^1.5.5",
+    "qrcode.react": "^4.2.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwind-merge": "^3.0.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.2",
+    "@capacitor/ios": "^8.5.2",
+    "@types/canvas-confetti": "^1.9.0",
+    "@types/node": "^22.13.10",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^10.0.5",
+    "cross-env": "^10.1.0",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.7.1",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17",
+    "typescript": "~5.7.2",
+    "vite": "^6.2.0",
+    "wait-on": "^9.5.1"
+  }
+}
