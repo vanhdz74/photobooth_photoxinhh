@@ -200,7 +200,11 @@ export class CameraService {
     }
   }
 
-  async captureFromVideoElement(video: HTMLVideoElement, mirror = true): Promise<string> {
+  async captureFromVideoElement(
+    video: HTMLVideoElement,
+    mirror = true,
+    cropToContainer?: { width: number; height: number } | null
+  ): Promise<string> {
     // If video element is not ready or has 0 dimensions, try srcObject stream or wait briefly
     if (!video.videoWidth || !video.videoHeight) {
       if (video.srcObject instanceof MediaStream) {
@@ -218,11 +222,36 @@ export class CameraService {
       });
     }
 
-    const width = video.videoWidth > 0 ? video.videoWidth : 1280;
-    const height = video.videoHeight > 0 ? video.videoHeight : 960;
+    const videoWidth = video.videoWidth > 0 ? video.videoWidth : 1280;
+    const videoHeight = video.videoHeight > 0 ? video.videoHeight : 960;
+
+    let sx = 0;
+    let sy = 0;
+    let sw = videoWidth;
+    let sh = videoHeight;
+
+    if (cropToContainer && cropToContainer.width > 0 && cropToContainer.height > 0) {
+      const containerAspect = cropToContainer.width / cropToContainer.height;
+      const videoAspect = videoWidth / videoHeight;
+
+      if (containerAspect > videoAspect) {
+        // Container is wider than video -> top and bottom were cropped in cover mode
+        sw = videoWidth;
+        sh = Math.round(videoWidth / containerAspect);
+        sx = 0;
+        sy = Math.round((videoHeight - sh) / 2);
+      } else {
+        // Container is taller than video -> left and right were cropped in cover mode
+        sh = videoHeight;
+        sw = Math.round(videoHeight * containerAspect);
+        sy = 0;
+        sx = Math.round((videoWidth - sw) / 2);
+      }
+    }
+
     const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
+    canvas.width = sw;
+    canvas.height = sh;
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Canvas context not available');
 
@@ -231,7 +260,7 @@ export class CameraService {
       ctx.scale(-1, 1);
     }
 
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
     return canvas.toDataURL('image/jpeg', 0.95);
   }
 

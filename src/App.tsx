@@ -98,7 +98,29 @@ function PhotoboothApp() {
   ]);
 
   const [stickers, setStickers] = useState<StickerItem[]>([]);
-  const [isMockCamera, setIsMockCamera] = useState(true);
+  const [isMockCamera, setIsMockCamera] = useState<boolean>(() => {
+    const saved = safeGetItem('photobooth_is_mock_camera');
+    if (saved !== null) return saved === 'true';
+    const savedCam = safeGetItem('photobooth_selected_camera_id');
+    if (savedCam) return savedCam === 'mock-camera';
+    return false; // Default false (Real camera) instead of forcing mock camera
+  });
+
+  const handleToggleMockMode = () => {
+    const next = !isMockCamera;
+    setIsMockCamera(next);
+    safeSetItem('photobooth_is_mock_camera', next ? 'true' : 'false');
+    if (next) {
+      safeSetItem('photobooth_selected_camera_id', 'mock-camera');
+      safeSetItem('photobooth_selected_camera_label', '🎭 Fake Camera (Ảnh mẫu Studio)');
+    } else {
+      const savedCam = safeGetItem('photobooth_selected_camera_id');
+      if (savedCam === 'mock-camera') {
+        safeSetItem('photobooth_selected_camera_id', '');
+        safeSetItem('photobooth_selected_camera_label', '');
+      }
+    }
+  };
 
   // Screen View State: 'home' | 'studio'
   const [currentScreen, setCurrentScreen] = useState<'home' | 'studio'>('home');
@@ -562,7 +584,7 @@ function PhotoboothApp() {
         onOpenBluetooth={handlePrepareBluetoothStrip}
         connectedBluetoothCount={connectedBluetoothCount}
         isMockMode={isMockCamera}
-        onToggleMockMode={() => setIsMockCamera(!isMockCamera)}
+        onToggleMockMode={handleToggleMockMode}
       />
 
       {/* Main Workspace Layout: 2 Columns on Desktop & iPad (Left: Live Preview Strip; Right: Frame Selector) */}
@@ -881,6 +903,7 @@ function PhotoboothApp() {
         requiredPhotos={selectedFrame.slotCount}
         onPhotosCaptured={handlePhotosCaptured}
         isMockMode={isMockCamera}
+        onMockModeChange={(isMock) => setIsMockCamera(isMock)}
       />
 
       {/* Photo Uploader Modal (Upload ảnh từ máy thay vì chụp) */}
@@ -909,7 +932,7 @@ function PhotoboothApp() {
         onClose={() => setIsDeviceHubOpen(false)}
         onOpenBluetooth={handlePrepareBluetoothStrip}
         isMockMode={isMockCamera}
-        onToggleMockMode={() => setIsMockCamera(!isMockCamera)}
+        onToggleMockMode={handleToggleMockMode}
       />
 
       <BluetoothModal

@@ -30,6 +30,7 @@ import { realP2PService } from '../services/realP2PService';
 import { sonyCameraService, SonyCameraInfo } from '../services/sonyCameraService';
 import { hotFolderService, HotFolderStatus } from '../services/hotFolderService';
 import { sounds } from '../utils/audio';
+import { safeGetItem, safeSetItem } from '../utils/safeStorage';
 
 interface CameraCaptureModalProps {
   isOpen: boolean;
@@ -37,6 +38,7 @@ interface CameraCaptureModalProps {
   requiredPhotos: number;
   onPhotosCaptured: (photos: string[]) => void;
   isMockMode: boolean;
+  onMockModeChange?: (isMock: boolean) => void;
 }
 
 export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
@@ -45,10 +47,17 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
   requiredPhotos,
   onPhotosCaptured,
   isMockMode: initialMockMode,
+  onMockModeChange,
 }) => {
   const [devices, setDevices] = useState<CameraDevice[]>([]);
-  const [selectedDevice, setSelectedDevice] = useState<string>('');
-  const [isMock, setIsMock] = useState(initialMockMode);
+  const [selectedDevice, setSelectedDevice] = useState<string>(() => {
+    return safeGetItem('photobooth_selected_camera_id') || '';
+  });
+  const [isMock, setIsMock] = useState<boolean>(() => {
+    const saved = safeGetItem('photobooth_is_mock_camera');
+    if (saved !== null) return saved === 'true';
+    return initialMockMode;
+  });
   const [phoneLiveFrame, setPhoneLiveFrame] = useState<string | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [sonyLiveFrame, setSonyLiveFrame] = useState<string | null>(null);
@@ -71,17 +80,57 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
   const [previewPhotoIndex, setPreviewPhotoIndex] = useState<number | null>(null); // Enlarged Photo Inspector
   const [retakeTargetIndex, setRetakeTargetIndex] = useState<number | null>(null); // Replace specific shot
 
-  // Capture Modes & Custom Countdown
-  const [countdownSeconds, setCountdownSeconds] = useState<number>(3);
-  const [isAutoSeries, setIsAutoSeries] = useState<boolean>(true); // Photobooth auto continuous series
-  const [fitMode, setFitMode] = useState<'cover' | 'contain'>('cover'); // Fullscreen edge-to-edge
+  // Capture Modes & Custom Countdown with Persistence
+  const [countdownSeconds, setCountdownSecondsState] = useState<number>(() => {
+    const saved = safeGetItem('photobooth_countdown_seconds');
+    return saved ? parseInt(saved, 10) || 3 : 3;
+  });
+  const setCountdownSeconds = (sec: number) => {
+    setCountdownSecondsState(sec);
+    safeSetItem('photobooth_countdown_seconds', String(sec));
+  };
+
+  const [isAutoSeries, setIsAutoSeriesState] = useState<boolean>(() => {
+    const saved = safeGetItem('photobooth_is_auto_series');
+    return saved !== null ? saved === 'true' : true;
+  });
+  const setIsAutoSeries = (val: boolean) => {
+    setIsAutoSeriesState(val);
+    safeSetItem('photobooth_is_auto_series', String(val));
+  };
+
+  const [fitMode, setFitModeState] = useState<'cover' | 'contain'>(() => {
+    const saved = safeGetItem('photobooth_fit_mode');
+    return saved === 'cover' || saved === 'contain' ? saved : 'contain';
+  });
+  const setFitMode = (val: 'cover' | 'contain') => {
+    setFitModeState(val);
+    safeSetItem('photobooth_fit_mode', val);
+  };
+
+  const [soundEnabled, setSoundEnabledState] = useState<boolean>(() => {
+    const saved = safeGetItem('photobooth_sound_enabled');
+    return saved !== null ? saved === 'true' : true;
+  });
+  const setSoundEnabled = (val: boolean) => {
+    setSoundEnabledState(val);
+    safeSetItem('photobooth_sound_enabled', String(val));
+  };
+
+  const [isMirrored, setIsMirroredState] = useState<boolean>(() => {
+    const saved = safeGetItem('photobooth_is_mirrored');
+    return saved !== null ? saved === 'true' : false;
+  });
+  const setIsMirrored = (val: boolean) => {
+    setIsMirroredState(val);
+    safeSetItem('photobooth_is_mirrored', String(val));
+  };
+
   const [isShooting, setIsShooting] = useState<boolean>(false);
   const [currentShotIndex, setCurrentShotIndex] = useState<number>(1);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [breakCountdown, setBreakCountdown] = useState<number | null>(null);
   const [showFlash, setShowFlash] = useState<boolean>(false);
-  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
-  const [isMirrored, setIsMirrored] = useState<boolean>(false);
   const [captureError, setCaptureError] = useState<string | null>(null);
   const [mounted, setMounted] = useState<boolean>(false);
 
@@ -222,13 +271,21 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
   // Capture single frame from active source without blocking
   const captureCurrentFrame = async (): Promise<string> => {
     let photoData = '';
+    const containerBox =
+      fitMode === 'cover' && videoRef.current?.parentElement
+        ? {
+            width: videoRef.current.parentElement.clientWidth,
+            height: videoRef.current.parentElement.clientHeight,
+          }
+        : null;
+
     if (selectedDevice === 'hot-folder-camera') {
       setIsWaitingHotFolder(true);
       try {
         photoData = await cameraService.captureFromHotFolder();
       } catch (hotErr: any) {
         if (videoRef.current && (videoRef.current.videoWidth > 0 || videoRef.current.srcObject)) {
-          photoData = await cameraService.captureFromVideoElement(videoRef.current, isMirrored);
+          photoData = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox);
         } else {
           throw hotErr;
         }
@@ -239,7 +296,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
       photoData = await cameraService.captureFromSonyCamera();
     } else if (selectedDevice === 'phone-live-camera') {
       if (videoRef.current && (videoRef.current.videoWidth > 0 || videoRef.current.srcObject)) {
-        photoData = await cameraService.captureFromVideoElement(videoRef.current, isMirrored);
+        photoData = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox);
       } else if (remoteStream) {
         photoData = await cameraService.captureFromMediaStream(remoteStream, isMirrored);
       } else if (realP2PService.getRemoteMediaStream()) {
@@ -252,7 +309,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
     } else if (isMock || selectedDevice === 'mock-camera') {
       photoData = await cameraService.getMockPhoto();
     } else if (videoRef.current && (videoRef.current.videoWidth > 0 || videoRef.current.srcObject)) {
-      photoData = await cameraService.captureFromVideoElement(videoRef.current, isMirrored);
+      photoData = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox);
     } else {
       photoData = await cameraService.captureFromPhoneStream();
     }
@@ -441,12 +498,32 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
     }
   };
 
+  // Select camera device and persist choice across sessions
+  const selectDeviceAndPersist = useCallback(
+    (deviceId: string, currentDevs?: CameraDevice[]) => {
+      setSelectedDevice(deviceId);
+      const mockFlag = deviceId === 'mock-camera';
+      setIsMock(mockFlag);
+      onMockModeChange?.(mockFlag);
+
+      safeSetItem('photobooth_selected_camera_id', deviceId);
+      safeSetItem('photobooth_is_mock_camera', mockFlag ? 'true' : 'false');
+
+      const list = currentDevs && currentDevs.length > 0 ? currentDevs : devices;
+      const found = list.find((d) => d.deviceId === deviceId);
+      if (found) {
+        safeSetItem('photobooth_selected_camera_label', found.label);
+      }
+    },
+    [devices, onMockModeChange]
+  );
+
   // Cycle to next available camera
   const cycleNextCamera = () => {
     if (devices.length <= 1 || isShooting) return;
     const currentIndex = devices.findIndex((d) => d.deviceId === selectedDevice);
     const nextIndex = (currentIndex + 1) % devices.length;
-    setSelectedDevice(devices[nextIndex].deviceId);
+    selectDeviceAndPersist(devices[nextIndex].deviceId);
   };
 
   // Handle 1-click scan and connect to USB Capture Card / Sony Camera
@@ -461,8 +538,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
 
       const usbDev = cameraService.findFirstUsbDevice(updatedDevices);
       if (usbDev) {
-        setSelectedDevice(usbDev.deviceId);
-        setIsMock(false);
+        selectDeviceAndPersist(usbDev.deviceId, updatedDevices);
         setUsbFeedback(`✅ ĐÃ TÌM THẤY MÁY ẢNH USB: ${usbDev.rawLabel || usbDev.label}`);
       } else {
         setUsbFeedback('⚠️ Chưa nhận diện được thiết bị USB Capture Card.');
@@ -474,7 +550,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
     }
   };
 
-  // Initialize camera list
+  // Initialize camera list and restore saved camera choice
   useEffect(() => {
     if (!isOpen) return;
 
@@ -482,16 +558,48 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
     cameraService.requestPermissionAndGetDevices().then((devs) => {
       if (!isMounted) return;
       setDevices(devs);
-      if (initialMockMode) {
-        setSelectedDevice('mock-camera');
-        setIsMock(true);
-      } else {
-        const usbDev = cameraService.findFirstUsbDevice(devs);
-        if (usbDev) {
-          setSelectedDevice(usbDev.deviceId);
-        } else if (devs.length > 0) {
-          setSelectedDevice(devs[0].deviceId);
+
+      // Check saved camera preference from safeStorage
+      const savedCameraId = safeGetItem('photobooth_selected_camera_id');
+      const savedCameraLabel = safeGetItem('photobooth_selected_camera_label');
+
+      let deviceToSelect: string | null = null;
+      const specialIds = ['mock-camera', 'sony-wifi-camera', 'hot-folder-camera', 'phone-live-camera'];
+
+      // 1. If saved ID is a virtual special camera
+      if (savedCameraId && specialIds.includes(savedCameraId)) {
+        deviceToSelect = savedCameraId;
+      }
+      // 2. If saved ID matches a hardware camera
+      else if (savedCameraId && devs.some((d) => d.deviceId === savedCameraId)) {
+        deviceToSelect = savedCameraId;
+      }
+      // 3. If device ID changed (e.g. browser restart), match by label
+      else if (savedCameraLabel) {
+        const matchedByLabel = devs.find(
+          (d) => d.label === savedCameraLabel || (d.rawLabel && d.rawLabel === savedCameraLabel)
+        );
+        if (matchedByLabel) {
+          deviceToSelect = matchedByLabel.deviceId;
         }
+      }
+
+      // 4. Fallback if no valid saved camera found
+      if (!deviceToSelect) {
+        if (initialMockMode) {
+          deviceToSelect = 'mock-camera';
+        } else {
+          const usbDev = cameraService.findFirstUsbDevice(devs);
+          if (usbDev) {
+            deviceToSelect = usbDev.deviceId;
+          } else if (devs.length > 0) {
+            deviceToSelect = devs[0].deviceId;
+          }
+        }
+      }
+
+      if (deviceToSelect) {
+        selectDeviceAndPersist(deviceToSelect, devs);
       }
     });
 
@@ -500,7 +608,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
       cameraService.stopStream();
       sonyCameraService.stopLiveview().catch(() => {});
     };
-  }, [isOpen, initialMockMode]);
+  }, [isOpen]);
 
   // Start stream when device changes
   useEffect(() => {
@@ -731,11 +839,19 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
           <button
             type="button"
             onClick={() => setFitMode(fitMode === 'cover' ? 'contain' : 'cover')}
-            className="p-1.5 sm:px-2.5 sm:py-1.5 rounded-xl bg-black/60 hover:bg-white/20 border border-white/20 text-gray-200 hover:text-white text-xs font-bold transition-all cursor-pointer shadow-md flex items-center gap-1"
-            title={fitMode === 'cover' ? 'Chuyển sang vừa khung (Contain)' : 'Chuyển sang tràn viền full màn (Cover)'}
+            className={`p-1.5 sm:px-2.5 sm:py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer shadow-md flex items-center gap-1.5 ${
+              fitMode === 'contain'
+                ? 'bg-pink-600/80 border-pink-400 text-white'
+                : 'bg-black/60 border-white/20 text-gray-300 hover:text-white'
+            }`}
+            title={
+              fitMode === 'contain'
+                ? 'Đang ở chế độ Xem đủ góc (toàn khung, không bị cắt góc trên dưới) - Bấm để chuyển sang Tràn viền'
+                : 'Đang ở chế độ Tràn viền - Bấm để chuyển sang Xem đủ góc (toàn khung)'
+            }
           >
-            {fitMode === 'cover' ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-            <span className="hidden md:inline">{fitMode === 'cover' ? 'Tràn Viền' : 'Vừa Khung'}</span>
+            {fitMode === 'contain' ? <Maximize2 className="w-3.5 h-3.5" /> : <Minimize2 className="w-3.5 h-3.5" />}
+            <span className="hidden md:inline">{fitMode === 'contain' ? 'Đủ Góc' : 'Tràn Viền'}</span>
           </button>
 
           {/* Sound Toggle */}
@@ -906,7 +1022,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
             })()}
 
             {/* Quick Switch Camera Button in Viewport */}
-            {devices.length > 1 && (
+            {devices.length > 1 && !isShooting && (
               <button
                 type="button"
                 onClick={(e) => {
@@ -937,36 +1053,34 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
           </div>
         )}
 
-        {/* 3. CENTER COUNTDOWN OVERLAY */}
+        {/* 3. TOP-RIGHT COUNTDOWN OVERLAY (Placed at top-right without full-screen obscuring scrim) */}
         {countdown !== null && (
-          <div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-black/40 backdrop-blur-xs pointer-events-none animate-in fade-in duration-100">
-            <div className="relative flex flex-col items-center justify-center">
-              <div className="w-36 h-36 sm:w-44 sm:h-44 rounded-full bg-black/80 backdrop-blur-md border-4 border-pink-500 flex items-center justify-center shadow-[0_0_60px_rgba(244,63,94,0.7)] animate-in zoom-in-75 duration-150">
-                <span
-                  key={countdown}
-                  className="text-7xl sm:text-8xl font-black text-white font-cute drop-shadow-[0_10px_25px_rgba(0,0,0,0.9)] animate-in zoom-in-50 duration-150"
-                >
-                  {countdown === 0 ? '✨' : countdown}
-                </span>
-              </div>
+          <div className="absolute top-4 right-4 sm:top-5 sm:right-5 z-40 flex flex-col items-end gap-2 pointer-events-none animate-in fade-in slide-in-from-top-2 duration-150">
+            <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full bg-black/80 backdrop-blur-md border-4 border-pink-500 flex items-center justify-center shadow-[0_0_35px_rgba(244,63,94,0.8)] animate-in zoom-in-75 duration-150">
+              <span
+                key={countdown}
+                className="text-4xl sm:text-5xl font-black text-white font-cute drop-shadow-[0_4px_15px_rgba(0,0,0,0.9)] animate-in zoom-in-50 duration-150"
+              >
+                {countdown === 0 ? '✨' : countdown}
+              </span>
+            </div>
 
-              <div className="mt-5 bg-pink-600/90 text-white px-5 py-1.5 rounded-full font-bold text-xs sm:text-sm shadow-2xl border border-white/30 flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-amber-300" />
-                <span>
-                  {countdown === 0
-                    ? '✨ CƯỜI TƯƠI LÊN NÀO! ✨'
-                    : `Kiểu số ${currentShotIndex} / ${requiredPhotos} • Giữ dáng (${countdown}s)`}
-                </span>
-              </div>
+            <div className="bg-pink-600/90 backdrop-blur-md text-white px-3.5 py-1 rounded-full font-bold text-xs sm:text-sm shadow-xl border border-white/30 flex items-center gap-1.5 animate-in fade-in duration-150">
+              <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+              <span>
+                {countdown === 0
+                  ? '✨ CƯỜI TƯƠI LÊN NÀO! ✨'
+                  : `Kiểu số ${currentShotIndex} / ${requiredPhotos} • (${countdown}s)`}
+              </span>
             </div>
           </div>
         )}
 
-        {/* 4. POSE BREAK OVERLAY */}
+        {/* 4. POSE BREAK OVERLAY (Top floating pill without full-screen dimming) */}
         {breakCountdown !== null && (
-          <div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-black/45 backdrop-blur-xs pointer-events-none animate-in fade-in duration-150">
-            <div className="bg-gradient-to-r from-purple-600 via-pink-600 to-rose-600 text-white px-6 py-3.5 rounded-3xl text-base sm:text-lg font-black shadow-2xl flex items-center gap-2.5 border-2 border-white/40 animate-pulse">
-              <Sparkles className="w-5 h-5 text-amber-300" />
+          <div className="absolute top-4 sm:top-6 inset-x-0 z-40 flex justify-center pointer-events-none animate-in fade-in slide-in-from-top-3 duration-150">
+            <div className="bg-gradient-to-r from-purple-600 via-pink-600 to-rose-600 text-white px-5 py-2.5 rounded-2xl text-sm sm:text-base font-black shadow-2xl flex items-center gap-2 border border-white/40 animate-pulse">
+              <Sparkles className="w-4 h-4 text-amber-300" />
               <span>Đổi dáng cho kiểu {capturedPhotos.length + 1} nào! ({breakCountdown}s)</span>
             </div>
           </div>
@@ -1313,7 +1427,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
             <span className="font-semibold text-gray-400 shrink-0">Nguồn Cam:</span>
             <select
               value={selectedDevice}
-              onChange={(e) => setSelectedDevice(e.target.value)}
+              onChange={(e) => selectDeviceAndPersist(e.target.value)}
               disabled={isShooting}
               className="bg-gray-900 border border-gray-700 text-white text-xs rounded-xl px-2 py-0.5 outline-none font-semibold truncate max-w-xs"
             >

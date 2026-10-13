@@ -3,6 +3,7 @@ import { X, Printer, Camera, Monitor, CheckCircle, Play, Shield, Cpu, Bluetooth 
 import { cameraService, CameraDevice } from '../services/cameraService';
 import { printService, PaperSizeId, PAPER_SIZES } from '../services/printService';
 import { PrinterInfo, SystemInfo } from '../types/electron';
+import { safeGetItem, safeSetItem } from '../utils/safeStorage';
 
 interface DeviceHubModalProps {
   isOpen: boolean;
@@ -24,6 +25,7 @@ export const DeviceHubModal: React.FC<DeviceHubModalProps> = ({
   const [selectedPrinter, setSelectedPrinter] = useState<string>('');
   const [selectedPaperSize, setSelectedPaperSize] = useState<PaperSizeId>(() => printService.getSelectedPaperSize());
   const [cameras, setCameras] = useState<CameraDevice[]>([]);
+  const [selectedCameraId, setSelectedCameraId] = useState<string>(() => safeGetItem('photobooth_selected_camera_id') || '');
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [isTestingPrint, setIsTestingPrint] = useState(false);
   const [printSuccessMessage, setPrintSuccessMessage] = useState<string | null>(null);
@@ -71,6 +73,7 @@ export const DeviceHubModal: React.FC<DeviceHubModalProps> = ({
 
     // 2. Load Cameras
     cameraService.getAvailableDevices().then(setCameras);
+    setSelectedCameraId(safeGetItem('photobooth_selected_camera_id') || '');
   }, [isOpen]);
 
   if (!isOpen) return null;
@@ -437,24 +440,63 @@ export const DeviceHubModal: React.FC<DeviceHubModalProps> = ({
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {cameras.map((cam) => (
-                  <div
-                    key={cam.deviceId}
-                    className="p-3.5 rounded-2xl border border-gray-800 bg-gray-800/40 flex items-center gap-3"
-                  >
-                    <div className="p-2 rounded-xl bg-gray-700 text-gray-300">
-                      <Camera className="w-5 h-5" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <span className="font-bold text-xs sm:text-sm text-white block truncate">
-                        {cam.label}
-                      </span>
-                      <span className="text-[11px] text-gray-400">
-                        {cam.deviceId === 'mock-camera' ? 'Giả lập 4K Studio' : 'WebRTC / PTP Driver'}
-                      </span>
-                    </div>
-                  </div>
-                ))}
+                {cameras.map((cam, idx) => {
+                  const isSelected = selectedCameraId
+                    ? selectedCameraId === cam.deviceId
+                    : isMockMode
+                    ? cam.deviceId === 'mock-camera'
+                    : idx === 0;
+
+                  return (
+                    <button
+                      key={cam.deviceId}
+                      type="button"
+                      onClick={() => {
+                        setSelectedCameraId(cam.deviceId);
+                        safeSetItem('photobooth_selected_camera_id', cam.deviceId);
+                        safeSetItem('photobooth_selected_camera_label', cam.label);
+                        const mockFlag = cam.deviceId === 'mock-camera';
+                        safeSetItem('photobooth_is_mock_camera', mockFlag ? 'true' : 'false');
+                        if (mockFlag !== isMockMode) {
+                          onToggleMockMode();
+                        }
+                      }}
+                      className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                        isSelected
+                          ? 'border-emerald-500 bg-emerald-950/20 ring-1 ring-emerald-500/50'
+                          : 'border-gray-800 bg-gray-800/40 hover:bg-gray-800/70 hover:border-gray-700'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div
+                          className={`p-2 rounded-xl ${
+                            isSelected ? 'bg-emerald-600 text-white' : 'bg-gray-700 text-gray-300'
+                          }`}
+                        >
+                          <Camera className="w-5 h-5" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <span className="font-bold text-xs sm:text-sm text-white block truncate">
+                            {cam.label}
+                          </span>
+                          <span className="text-[11px] text-gray-400">
+                            {cam.deviceId === 'mock-camera' ? 'Giả lập 4K Studio' : 'WebRTC / PTP Driver'}
+                          </span>
+                        </div>
+                      </div>
+                      {isSelected ? (
+                        <span className="text-[11px] font-bold text-emerald-400 bg-emerald-950/80 border border-emerald-500/30 px-2.5 py-1 rounded-full shrink-0 flex items-center gap-1">
+                          <CheckCircle className="w-3 h-3" />
+                          Đang Dùng
+                        </span>
+                      ) : (
+                        <span className="text-[11px] font-semibold text-gray-400 hover:text-white bg-gray-800 border border-gray-700 px-2.5 py-1 rounded-full shrink-0">
+                          Chọn
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
 
               <div className="p-4 rounded-2xl bg-gray-800/60 border border-gray-700 text-xs text-gray-300 flex flex-col gap-2">
