@@ -21,10 +21,12 @@ import {
   ZoomOut,
   RotateCw,
   Smile,
-  RefreshCw
+  RefreshCw,
+  X
 } from 'lucide-react';
-import { FrameTemplate, PhotoData, PhotoSlot, StickerItem } from '../types/photobooth';
+import { FrameTemplate, PhotoData, PhotoSlot, StickerItem, BackgroundFitMode, BackgroundImageConfig } from '../types/photobooth';
 import { SAMPLE_PORTRAITS } from '../templates/samplePhotos';
+import { DeleteFrameModal } from './DeleteFrameModal';
 
 interface FrameStudioScreenProps {
   onBack: () => void;
@@ -171,6 +173,7 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
 }) => {
   type TabType = 'borders' | 'background' | 'elements' | 'canva' | 'library';
   const [activeTab, setActiveTab] = useState<TabType>('borders');
+  const [frameToDelete, setFrameToDelete] = useState<FrameTemplate | null>(null);
 
   // Frame Properties State
   const [frameName, setFrameName] = useState(initialFrame.name || 'Khung Mẫu Mới');
@@ -200,6 +203,8 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
   // Typography Studio State
   const [headerText, setHeaderText] = useState<string>(initialFrame.headerText || '');
   const [footerText, setFooterText] = useState<string>(initialFrame.footerText || '');
+  const [showHeader, setShowHeader] = useState<boolean>(initialFrame.showHeader !== false);
+  const [showFooter, setShowFooter] = useState<boolean>(initialFrame.showFooter !== false);
   const [themeColor, setThemeColor] = useState<string>(initialFrame.themeColor || '#111827');
   const [fontFamily, setFontFamily] = useState<string>(initialFrame.fontFamily || "'Plus Jakarta Sans', sans-serif");
 
@@ -214,6 +219,27 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
   const [showCanvaGuide, setShowCanvaGuide] = useState<boolean>(false);
   const [isLoadingUrl, setIsLoadingUrl] = useState<boolean>(false);
   const [urlError, setUrlError] = useState<string | null>(null);
+
+  // Background Image Alignment & Effects State
+  const [bgImageFit, setBgImageFit] = useState<BackgroundFitMode>(
+    initialFrame.backgroundImageConfig?.fit || 'cover'
+  );
+  const [bgImageScale, setBgImageScale] = useState<number>(
+    initialFrame.backgroundImageConfig?.scale !== undefined ? initialFrame.backgroundImageConfig.scale : 1.0
+  );
+  const [bgImageOffsetX, setBgImageOffsetX] = useState<number>(
+    initialFrame.backgroundImageConfig?.offsetX || 0
+  );
+  const [bgImageOffsetY, setBgImageOffsetY] = useState<number>(
+    initialFrame.backgroundImageConfig?.offsetY || 0
+  );
+  const [bgImageOpacity, setBgImageOpacity] = useState<number>(
+    initialFrame.backgroundImageConfig?.opacity !== undefined ? initialFrame.backgroundImageConfig.opacity : 1.0
+  );
+  const [bgImageBlur, setBgImageBlur] = useState<number>(
+    initialFrame.backgroundImageConfig?.blur || 0
+  );
+  const bgFileInputRef = useRef<HTMLInputElement>(null);
 
   // Template Attached Elements / Stickers State
   const [templateStickers, setTemplateStickers] = useState<StickerItem[]>(
@@ -279,6 +305,16 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
       return slots;
     }
 
+    if (aspectRatio === '4x6' && slotCount === 2) {
+      const availableHeight = height - topPadding - bottomPadding - slotGap;
+      const slotH = Math.max(50, availableHeight / 2);
+      const slotW = width - sidePadding * 2;
+      return [
+        { id: 0, x: sidePadding, y: topPadding, width: slotW, height: slotH, borderRadius: slotRadius },
+        { id: 1, x: sidePadding, y: topPadding + slotH + slotGap, width: slotW, height: slotH, borderRadius: slotRadius },
+      ];
+    }
+
     if (slotCount === 4 && aspectRatio === '4x6') {
       const cols = 2;
       const rows = 2;
@@ -337,19 +373,83 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
     canvas.width = width;
     canvas.height = height;
 
+    const drawBackgroundImage = (img: HTMLImageElement) => {
+      // Base underlay
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(0, 0, width, height);
+
+      // Adjusted image
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, bgImageOpacity));
+      if (bgImageBlur > 0) {
+        ctx.filter = `blur(${bgImageBlur}px)`;
+      }
+
+      const imgW = img.naturalWidth || img.width || width;
+      const imgH = img.naturalHeight || img.height || height;
+      const imgAspect = imgW / (imgH || 1);
+      const canvasAspect = width / (height || 1);
+
+      if (bgImageFit === 'tile') {
+        const pat = ctx.createPattern(img, 'repeat');
+        if (pat) {
+          ctx.fillStyle = pat;
+          ctx.fillRect(0, 0, width, height);
+        }
+      } else {
+        let drawW = width;
+        let drawH = height;
+
+        if (bgImageFit === 'contain') {
+          if (imgAspect > canvasAspect) {
+            drawW = width;
+            drawH = width / imgAspect;
+          } else {
+            drawH = height;
+            drawW = height * imgAspect;
+          }
+        } else if (bgImageFit === 'cover') {
+          if (imgAspect > canvasAspect) {
+            drawH = height;
+            drawW = height * imgAspect;
+          } else {
+            drawW = width;
+            drawH = width / imgAspect;
+          }
+        } else if (bgImageFit === 'center') {
+          drawW = imgW;
+          drawH = imgH;
+        } else if (bgImageFit === 'stretch') {
+          drawW = width;
+          drawH = height;
+        }
+
+        drawW *= bgImageScale;
+        drawH *= bgImageScale;
+
+        const drawX = (width - drawW) / 2 + bgImageOffsetX;
+        const drawY = (height - drawH) / 2 + bgImageOffsetY;
+
+        ctx.drawImage(img, drawX, drawY, drawW, drawH);
+      }
+      ctx.restore();
+      drawForegroundElements();
+    };
+
     // 1. Draw Background
     if (bgMode === 'image' && uploadedImage && frameLayerMode === 'background') {
       const img = new Image();
       img.src = uploadedImage;
-      img.onload = () => {
-        ctx.drawImage(img, 0, 0, width, height);
-        drawForegroundElements();
-      };
-      img.onerror = () => {
-        ctx.fillStyle = bgColor;
-        ctx.fillRect(0, 0, width, height);
-        drawForegroundElements();
-      };
+      if (img.complete) {
+        drawBackgroundImage(img);
+      } else {
+        img.onload = () => drawBackgroundImage(img);
+        img.onerror = () => {
+          ctx.fillStyle = bgColor;
+          ctx.fillRect(0, 0, width, height);
+          drawForegroundElements();
+        };
+      }
     } else if (bgMode === 'gradient') {
       const rad = (gradientAngle * Math.PI) / 180;
       const x2 = Math.cos(rad) * width;
@@ -582,7 +682,7 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
       }
 
       // 5. Draw Header Text
-      if (headerText) {
+      if (headerText && showHeader) {
         ctx.save();
         ctx.fillStyle = themeColor;
         ctx.font = `bold 18px ${fontFamily}`;
@@ -593,7 +693,7 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
       }
 
       // 6. Draw Footer Text
-      if (footerText) {
+      if (footerText && showFooter) {
         ctx.save();
         ctx.fillStyle = themeColor;
         ctx.font = `600 15px ${fontFamily}`;
@@ -614,7 +714,7 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
         if (stk.type === 'image') {
           const img = new Image();
           img.src = stk.content;
-          const baseSize = (stk.width || 120) * (stk.scale || 1.0);
+          const baseSize = (stk.width || 75) * (stk.scale || 1.0);
           if (img.complete) {
             const aspect = (img.width || 1) / (img.height || 1);
             let dw = baseSize;
@@ -639,7 +739,7 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
             };
           }
         } else if (stk.type === 'text') {
-          const fSize = 28 * (stk.scale || 1.0);
+          const fSize = 22 * (stk.scale || 1.0);
           const fFam = stk.fontFamily || "'Plus Jakarta Sans', sans-serif";
           ctx.font = `bold ${fSize}px ${fFam}`;
           ctx.fillStyle = stk.color || themeColor || '#111827';
@@ -647,7 +747,7 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
           ctx.textBaseline = 'middle';
           ctx.fillText(stk.content, 0, 0);
         } else {
-          ctx.font = `${40 * (stk.scale || 1.0)}px sans-serif`;
+          ctx.font = `${30 * (stk.scale || 1.0)}px sans-serif`;
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
           ctx.fillText(stk.content, 0, 0);
@@ -683,8 +783,16 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
     sidePadding,
     uploadedImage,
     frameLayerMode,
+    bgImageFit,
+    bgImageScale,
+    bgImageOffsetX,
+    bgImageOffsetY,
+    bgImageOpacity,
+    bgImageBlur,
     headerText,
     footerText,
+    showHeader,
+    showFooter,
     themeColor,
     fontFamily,
     computeSlots,
@@ -705,6 +813,20 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
       };
       reader.readAsDataURL(file);
     }
+  };
+
+  const handleUploadBackgroundImage = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        setUploadedImage(event.target?.result as string);
+        setBgMode('image');
+        setFrameLayerMode('background');
+      };
+      reader.readAsDataURL(file);
+    }
+    if (e.target) e.target.value = '';
   };
 
   const handleApplyUrl = async () => {
@@ -752,8 +874,8 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
           y: height / 2 + (Math.random() * 100 - 50),
           scale: 1.0,
           rotation: 0,
-          width: 140,
-          height: 140,
+          width: 75,
+          height: 75,
         };
         setTemplateStickers((prev) => [...prev, newSticker]);
         setSelectedStickerId(newSticker.id);
@@ -796,7 +918,7 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
       type: 'emoji',
       x: width / 2 + (Math.random() * 80 - 40),
       y: height / 2 + (Math.random() * 160 - 80),
-      scale: 1.2,
+      scale: 1.0,
       rotation: 0,
     };
     setTemplateStickers((prev) => [...prev, newSticker]);
@@ -892,6 +1014,8 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
     setPattern(frame.pattern || 'none');
     setHeaderText(frame.headerText || '');
     setFooterText(frame.footerText || '');
+    setShowHeader(frame.showHeader !== false);
+    setShowFooter(frame.showFooter !== false);
     setThemeColor(frame.themeColor || '#111827');
     setFontFamily(frame.fontFamily || "'Plus Jakarta Sans', sans-serif");
     
@@ -906,6 +1030,12 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
       setBgMode('image');
       setUploadedImage(frame.backgroundImage);
       setFrameLayerMode('background');
+      setBgImageFit(frame.backgroundImageConfig?.fit || 'cover');
+      setBgImageScale(frame.backgroundImageConfig?.scale !== undefined ? frame.backgroundImageConfig.scale : 1.0);
+      setBgImageOffsetX(frame.backgroundImageConfig?.offsetX || 0);
+      setBgImageOffsetY(frame.backgroundImageConfig?.offsetY || 0);
+      setBgImageOpacity(frame.backgroundImageConfig?.opacity !== undefined ? frame.backgroundImageConfig.opacity : 1.0);
+      setBgImageBlur(frame.backgroundImageConfig?.blur || 0);
     } else if (frame.overlayImageUrl) {
       setUploadedImage(frame.overlayImageUrl);
       setFrameLayerMode('overlay');
@@ -920,6 +1050,32 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
     }
 
     setTemplateStickers(frame.stickers ? JSON.parse(JSON.stringify(frame.stickers)) : []);
+    setActiveTab('borders');
+  };
+
+  // Reset to pristine clean pure white blank frame
+  const handleResetToBlankWhite = (targetSlots: number = 4) => {
+    const is3 = targetSlots === 3;
+    setFrameName(is3 ? `Khung 3 Ảnh Trắng ${(customFrames?.length || 0) + 1}` : `Khung Trắng Mới ${(customFrames?.length || 0) + 1}`);
+    setSlotCount(targetSlots);
+    setAspectRatio(targetSlots === 6 ? '4x6' : '2x6');
+    setSlotBorderWidth(0);
+    setSlotBorderStyle('solid');
+    setSlotBorderColor('#FFFFFF');
+    setSlotRadius(16);
+    setBgMode('solid');
+    setBgColor('#FFFFFF');
+    setPattern('none');
+    setHeaderText('');
+    setFooterText(is3 ? 'HARU 3-CUT • 2026' : 'PHOTO XINHH • 2026');
+    setThemeColor('#111827');
+    setFontFamily("'Plus Jakarta Sans', sans-serif");
+    setUploadedImage(null);
+    setFrameLayerMode('overlay');
+    setTemplateStickers([]);
+    setTopPadding(is3 ? 140 : 130);
+    setBottomPadding(is3 ? 140 : 130);
+    setSidePadding(40);
     setActiveTab('borders');
   };
 
@@ -978,6 +1134,18 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
       ? `linear-gradient(${gradientAngle}deg, ${gradientColor1} 0%, ${gradientColor2} 100%)`
       : undefined;
 
+    const finalBgConfig: BackgroundImageConfig | undefined =
+      finalBgImage && frameLayerMode === 'background'
+        ? {
+            fit: bgImageFit,
+            scale: bgImageScale,
+            offsetX: bgImageOffsetX,
+            offsetY: bgImageOffsetY,
+            opacity: bgImageOpacity,
+            blur: bgImageBlur,
+          }
+        : undefined;
+
     const frameData: FrameTemplate = {
       id: isNewTemplate || !initialFrame.isCustom ? `custom-${Date.now()}` : initialFrame.id,
       name: frameName.trim() || 'Khung Tùy Chỉnh',
@@ -989,10 +1157,13 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
       backgroundColor: bgColor,
       backgroundGradient: calculatedGradient,
       backgroundImage: finalBgImage,
+      backgroundImageConfig: finalBgConfig,
       overlayImageUrl: finalOverlayUrl,
       themeColor,
       headerText: headerText.trim() || undefined,
       footerText: footerText.trim() || undefined,
+      showHeader,
+      showFooter,
       slotBorderColor,
       slotBorderWidth,
       slotBorderStyle,
@@ -1028,7 +1199,7 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
       />
 
       {/* TOP STUDIO HEADER BAR */}
-      <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-pink-100 shadow-sm px-3 sm:px-6 py-2.5 flex items-center justify-between gap-2">
+      <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-pink-100 shadow-sm px-3 sm:px-6 pt-[max(env(safe-area-inset-top,0px),0.625rem)] pb-2.5 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 sm:gap-3">
           <button
             type="button"
@@ -1069,6 +1240,38 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
 
         {/* Right: Actions */}
         <div className="flex items-center gap-1.5 sm:gap-2">
+          <button
+            type="button"
+            onClick={() => handleResetToBlankWhite(3)}
+            title="Làm mới khung về mẫu 3 ảnh dọc màu trắng tinh"
+            className="py-1.5 px-3 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-xs shadow-2xs transition-all active:scale-95 flex items-center gap-1 cursor-pointer"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-indigo-500" />
+            <span className="hidden sm:inline">Khung 3 Ảnh Trắng</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleResetToBlankWhite(4)}
+            title="Làm mới khung về màu trắng tinh mặc định"
+            className="py-1.5 px-3 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-xs shadow-2xs transition-all active:scale-95 flex items-center gap-1 cursor-pointer"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-gray-500" />
+            <span className="hidden sm:inline">Khung 4 Ảnh Trắng</span>
+          </button>
+
+          {initialFrame.isCustom && onDeleteCustomFrame && (
+            <button
+              type="button"
+              onClick={() => setFrameToDelete(initialFrame)}
+              className="py-1.5 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs shadow-xs transition-all active:scale-95 flex items-center gap-1 border border-rose-200 cursor-pointer"
+              title="Xoá mẫu này vĩnh viễn"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+              <span className="hidden sm:inline">Xoá Mẫu</span>
+            </button>
+          )}
+
           {initialFrame.isCustom && (
             <button
               type="button"
@@ -1190,15 +1393,87 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
                     </label>
                     <select
                       value={slotCount}
-                      onChange={(e) => setSlotCount(Number(e.target.value))}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setSlotCount(val);
+                        if (val === 2 || val === 6) {
+                          setAspectRatio('4x6');
+                        } else if (val === 3 || val === 4) {
+                          setAspectRatio('2x6');
+                        }
+                      }}
                       className="w-full px-3 py-2 rounded-xl border border-gray-200 text-xs sm:text-sm font-medium focus:ring-2 focus:ring-pink-400 bg-white"
                     >
+                      <option value={2}>2 ô ảnh (Khổ 4x6 inch Postcard)</option>
+                      <option value={3}>3 ô ảnh dọc (3-Cut Strip)</option>
                       <option value={4}>4 ô ảnh (Chuẩn Life4Cuts)</option>
-                      <option value={3}>3 ô ảnh dọc</option>
-                      <option value={2}>2 ô ảnh (Thẻ lớn)</option>
-                      <option value={1}>1 ô ảnh đơn (Polaroid)</option>
                       <option value={6}>6 ô ảnh (Lưới 2x3)</option>
+                      <option value={1}>1 ô ảnh đơn (Polaroid)</option>
                     </select>
+
+                    {/* Quick slot pills */}
+                    <div className="grid grid-cols-4 gap-1 mt-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSlotCount(2);
+                          setAspectRatio('4x6');
+                        }}
+                        className={`py-1 px-1 rounded-lg text-[10px] sm:text-[11px] font-bold transition-all cursor-pointer truncate ${
+                          slotCount === 2
+                            ? 'bg-amber-600 text-white shadow-xs'
+                            : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+                        }`}
+                        title="Khổ 2 ảnh 4x6 inch"
+                      >
+                        📸 2 Ảnh
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSlotCount(3);
+                          setAspectRatio('2x6');
+                        }}
+                        className={`py-1 px-1 rounded-lg text-[10px] sm:text-[11px] font-bold transition-all cursor-pointer truncate ${
+                          slotCount === 3
+                            ? 'bg-indigo-600 text-white shadow-xs'
+                            : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+                        }`}
+                        title="Dải 3 ảnh dọc"
+                      >
+                        📐 3 Ảnh
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSlotCount(4);
+                          setAspectRatio('2x6');
+                        }}
+                        className={`py-1 px-1 rounded-lg text-[10px] sm:text-[11px] font-bold transition-all cursor-pointer truncate ${
+                          slotCount === 4
+                            ? 'bg-pink-600 text-white shadow-xs'
+                            : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+                        }`}
+                        title="Dải 4 ảnh chuẩn"
+                      >
+                        🎞️ 4 Ảnh
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSlotCount(6);
+                          setAspectRatio('4x6');
+                        }}
+                        className={`py-1 px-1 rounded-lg text-[10px] sm:text-[11px] font-bold transition-all cursor-pointer truncate ${
+                          slotCount === 6
+                            ? 'bg-teal-600 text-white shadow-xs'
+                            : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+                        }`}
+                        title="Lưới 6 ô 4x6"
+                      >
+                        🖼️ 6 Ô
+                      </button>
+                    </div>
                   </div>
 
                   <div>
@@ -1386,26 +1661,274 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
             {/* TAB 2: BACKGROUND & PATTERNS */}
             {activeTab === 'background' && (
               <div className="flex flex-col gap-4 animate-in fade-in duration-150">
-                <div className="grid grid-cols-2 gap-2">
+                {/* Hidden background file input */}
+                <input
+                  ref={bgFileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleUploadBackgroundImage}
+                  className="hidden"
+                />
+
+                <div className="grid grid-cols-3 gap-1.5">
                   <button
                     type="button"
                     onClick={() => setBgMode('solid')}
-                    className={`py-2 px-3 rounded-xl text-xs font-bold border transition-all ${
+                    className={`py-2 px-2 rounded-xl text-xs font-bold border transition-all ${
                       bgMode === 'solid' ? 'border-pink-500 bg-pink-50 text-pink-700 shadow-xs' : 'border-gray-200 text-gray-600 bg-white'
                     }`}
                   >
-                    🎨 Màu Đơn Sắc
+                    🎨 Đơn Sắc
                   </button>
                   <button
                     type="button"
                     onClick={() => setBgMode('gradient')}
-                    className={`py-2 px-3 rounded-xl text-xs font-bold border transition-all ${
+                    className={`py-2 px-2 rounded-xl text-xs font-bold border transition-all ${
                       bgMode === 'gradient' ? 'border-pink-500 bg-pink-50 text-pink-700 shadow-xs' : 'border-gray-200 text-gray-600 bg-white'
                     }`}
                   >
-                    🌈 Màu Gradient (Chuyển Sắc)
+                    🌈 Gradient
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBgMode('image');
+                      setFrameLayerMode('background');
+                      if (!uploadedImage) {
+                        bgFileInputRef.current?.click();
+                      }
+                    }}
+                    className={`py-2 px-2 rounded-xl text-xs font-bold border transition-all ${
+                      bgMode === 'image' && frameLayerMode === 'background'
+                        ? 'border-pink-500 bg-pink-50 text-pink-700 shadow-xs'
+                        : 'border-gray-200 text-gray-600 bg-white'
+                    }`}
+                  >
+                    🖼️ Ảnh Nền (Máy)
                   </button>
                 </div>
+
+                {bgMode === 'image' && (
+                  <div className="bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200 space-y-3">
+                    {/* Header: Title and Upload Action */}
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-gray-800 uppercase flex items-center gap-1.5">
+                        <ImageIcon className="w-4 h-4 text-pink-600" />
+                        <span>Ảnh Nền Đặt Phía Sau</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => bgFileInputRef.current?.click()}
+                        className="py-1 px-2.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white font-bold text-xs shadow-xs transition-all flex items-center gap-1 cursor-pointer hover:scale-102"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>{uploadedImage && frameLayerMode === 'background' ? 'Đổi Ảnh Khác' : 'Tải Ảnh Từ Máy'}</span>
+                      </button>
+                    </div>
+
+                    {uploadedImage && frameLayerMode === 'background' ? (
+                      <>
+                        {/* Thumbnail & Remove button */}
+                        <div className="rounded-xl border border-gray-200 bg-white p-2 flex items-center justify-between shadow-2xs">
+                          <div className="flex items-center gap-2.5 overflow-hidden">
+                            <img
+                              src={uploadedImage}
+                              alt="Background Preview"
+                              className="w-12 h-16 object-cover rounded-lg border border-pink-200 shadow-xs shrink-0"
+                            />
+                            <div className="text-[11px] text-gray-600 leading-tight">
+                              <span className="font-bold text-gray-800 block text-xs">Đang Dùng Ảnh Nền</span>
+                              <span className="text-[10px] text-gray-400">Tùy chỉnh góc nhìn, căn giữa, thu phóng dưới đây</span>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setUploadedImage(null);
+                              setBgMode('solid');
+                            }}
+                            title="Xóa bỏ ảnh nền này"
+                            className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+
+                        {/* 1. Fit Mode Selector */}
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-bold text-gray-700 block">1. Chế độ phủ ảnh (Fit Mode):</label>
+                          <div className="grid grid-cols-5 gap-1">
+                            {[
+                              { id: 'cover', label: 'Phủ Đầy' },
+                              { id: 'contain', label: 'Vừa Khít' },
+                              { id: 'stretch', label: 'Kéo Dãn' },
+                              { id: 'center', label: 'Ở Giữa' },
+                              { id: 'tile', label: 'Lặp Nền' },
+                            ].map((fitOption) => (
+                              <button
+                                key={fitOption.id}
+                                type="button"
+                                onClick={() => setBgImageFit(fitOption.id as any)}
+                                className={`py-1 px-1 rounded-xl text-center border text-[10px] transition-all font-semibold ${
+                                  bgImageFit === fitOption.id
+                                    ? 'border-pink-500 bg-pink-50 text-pink-700 font-bold shadow-2xs'
+                                    : 'border-gray-200 text-gray-600 bg-white hover:bg-gray-50'
+                                }`}
+                              >
+                                {fitOption.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* 2. Zoom / Scale Slider */}
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="font-bold text-gray-700">2. Thu phóng kích thước:</span>
+                            <span className="font-bold text-pink-600">{Math.round(bgImageScale * 100)}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0.5"
+                            max="2.5"
+                            step="0.05"
+                            value={bgImageScale}
+                            onChange={(e) => setBgImageScale(parseFloat(e.target.value))}
+                            className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-pink-500"
+                          />
+                        </div>
+
+                        {/* 3. Position Offset Pad & Sliders */}
+                        <div className="space-y-2 pt-2 border-t border-gray-200">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="font-bold text-gray-700">3. Căn chỉnh vị trí ảnh nền:</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setBgImageOffsetX(0);
+                                setBgImageOffsetY(0);
+                              }}
+                              className="text-[10px] text-pink-600 hover:underline font-semibold"
+                            >
+                              Về tâm giữa (0, 0)
+                            </button>
+                          </div>
+
+                          {/* Quick 9-position align grid */}
+                          <div className="grid grid-cols-3 gap-1 max-w-[210px] mx-auto py-1">
+                            {[
+                              { label: '↖ Trên Trái', ox: -120, oy: -200 },
+                              { label: '⬆ Giữa Trên', ox: 0, oy: -200 },
+                              { label: '↗ Trên Phải', ox: 120, oy: -200 },
+                              { label: '⬅ Trái', ox: -120, oy: 0 },
+                              { label: '🎯 Giữa', ox: 0, oy: 0 },
+                              { label: '➡ Phải', ox: 120, oy: 0 },
+                              { label: '↙ Dưới Trái', ox: -120, oy: 200 },
+                              { label: '⬇ Giữa Dưới', ox: 0, oy: 200 },
+                              { label: '↘ Dưới Phải', ox: 120, oy: 200 },
+                            ].map((p, pIdx) => (
+                              <button
+                                key={pIdx}
+                                type="button"
+                                onClick={() => {
+                                  setBgImageOffsetX(p.ox);
+                                  setBgImageOffsetY(p.oy);
+                                }}
+                                className={`py-1 px-1 rounded-lg text-[9px] font-bold border transition-all text-center ${
+                                  bgImageOffsetX === p.ox && bgImageOffsetY === p.oy
+                                    ? 'bg-pink-500 text-white border-pink-600 shadow-2xs'
+                                    : 'bg-white text-gray-600 border-gray-200 hover:bg-pink-50'
+                                }`}
+                              >
+                                {p.label}
+                              </button>
+                            ))}
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 text-[10px] text-gray-600">
+                            <div>
+                              <div className="flex justify-between mb-0.5">
+                                <span>Dịch ngang X:</span>
+                                <span className="font-bold text-gray-800">{bgImageOffsetX}px</span>
+                              </div>
+                              <input
+                                type="range"
+                                min="-400"
+                                max="400"
+                                step="5"
+                                value={bgImageOffsetX}
+                                onChange={(e) => setBgImageOffsetX(parseInt(e.target.value, 10))}
+                                className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-pink-500"
+                              />
+                            </div>
+                            <div>
+                              <div className="flex justify-between mb-0.5">
+                                <span>Dịch dọc Y:</span>
+                                <span className="font-bold text-gray-800">{bgImageOffsetY}px</span>
+                              </div>
+                              <input
+                                type="range"
+                                min="-600"
+                                max="600"
+                                step="5"
+                                value={bgImageOffsetY}
+                                onChange={(e) => setBgImageOffsetY(parseInt(e.target.value, 10))}
+                                className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-pink-500"
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* 4. Opacity & Blur Effect Sliders */}
+                        <div className="grid grid-cols-2 gap-2.5 pt-2 border-t border-gray-200 text-[11px]">
+                          <div>
+                            <div className="flex justify-between mb-0.5">
+                              <span className="font-bold text-gray-700">4. Độ mờ đục:</span>
+                              <span className="font-bold text-pink-600">{Math.round(bgImageOpacity * 100)}%</span>
+                            </div>
+                            <input
+                              type="range"
+                              min="0.1"
+                              max="1.0"
+                              step="0.05"
+                              value={bgImageOpacity}
+                              onChange={(e) => setBgImageOpacity(parseFloat(e.target.value))}
+                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-pink-500"
+                            />
+                          </div>
+
+                          <div>
+                            <div className="flex justify-between mb-0.5">
+                              <span className="font-bold text-gray-700">5. Mờ nghệ thuật (Blur):</span>
+                              <span className="font-bold text-purple-600">{bgImageBlur}px</span>
+                            </div>
+                            <input
+                              type="range"
+                              min="0"
+                              max="20"
+                              step="1"
+                              value={bgImageBlur}
+                              onChange={(e) => setBgImageBlur(parseInt(e.target.value, 10))}
+                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                            />
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      /* Empty state: upload prompt */
+                      <div
+                        onClick={() => bgFileInputRef.current?.click()}
+                        className="p-6 border-2 border-dashed border-pink-200 hover:border-pink-400 bg-white rounded-xl flex flex-col items-center justify-center gap-2 cursor-pointer transition-all hover:bg-pink-50/50"
+                      >
+                        <div className="w-10 h-10 rounded-full bg-pink-100 flex items-center justify-center text-pink-600">
+                          <Upload className="w-5 h-5" />
+                        </div>
+                        <span className="text-xs font-bold text-gray-700">Nhấn để chọn ảnh từ máy làm nền</span>
+                        <span className="text-[10px] text-gray-400 text-center">Hỗ trợ JPG, PNG, WEBP — có thể tùy chỉnh căn lề & thu phóng</span>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {bgMode === 'solid' && (
                   <div className="bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200 space-y-2.5">
@@ -1517,29 +2040,91 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
                 </div>
 
                 {/* Header & Footer Text Settings */}
-                <div className="bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200 space-y-2.5 text-xs">
-                  <span className="font-bold text-gray-700 block uppercase">Chữ Đầu & Cuối Khung (Nametag)</span>
+                <div className="bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200 space-y-3 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-gray-700 block uppercase">Chữ Đầu & Cuối Khung (Nametag)</span>
+                  </div>
                   
-                  <div>
-                    <label className="text-[11px] text-gray-500 block mb-0.5">Tiêu đề trên (Header text):</label>
-                    <input
-                      type="text"
-                      value={headerText}
-                      onChange={(e) => setHeaderText(e.target.value)}
-                      placeholder="VD: ★ BEST FRIENDS ★"
-                      className="w-full px-3 py-1.5 rounded-xl border border-gray-200 text-xs focus:ring-2 focus:ring-pink-400 bg-white"
-                    />
+                  {/* Tiêu đề trên (Header text) */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[11px] text-gray-600 font-semibold">Tiêu đề trên (Chữ đầu khung):</label>
+                      <button
+                        type="button"
+                        onClick={() => setShowHeader(!showHeader)}
+                        className={`text-[10px] px-2 py-0.5 rounded-full font-bold transition-all cursor-pointer flex items-center gap-1 border ${
+                          showHeader
+                            ? 'bg-emerald-100 text-emerald-800 border-emerald-300 hover:bg-emerald-200'
+                            : 'bg-gray-200 text-gray-500 border-gray-300 hover:bg-gray-300'
+                        }`}
+                        title={showHeader ? 'Nhấn để TẮT chữ đầu khung' : 'Nhấn để BẬT chữ đầu khung'}
+                      >
+                        <span>{showHeader ? '✓ Đang BẬT' : '✕ Đã TẮT'}</span>
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="text"
+                        value={headerText}
+                        onChange={(e) => setHeaderText(e.target.value)}
+                        disabled={!showHeader}
+                        placeholder="VD: ★ BEST FRIENDS ★"
+                        className={`w-full px-3 py-1.5 rounded-xl border text-xs focus:ring-2 focus:ring-pink-400 bg-white transition-all ${
+                          showHeader ? 'border-gray-200 text-gray-900' : 'border-gray-200 bg-gray-100 text-gray-400 line-through opacity-70'
+                        }`}
+                      />
+                      {headerText && (
+                        <button
+                          type="button"
+                          onClick={() => setHeaderText('')}
+                          title="Xoá nhanh nội dung chữ đầu"
+                          className="p-1.5 text-gray-400 hover:text-red-500 rounded-lg hover:bg-gray-100 cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
 
-                  <div>
-                    <label className="text-[11px] text-gray-500 block mb-0.5">Tiêu đề dưới (Footer text):</label>
-                    <input
-                      type="text"
-                      value={footerText}
-                      onChange={(e) => setFooterText(e.target.value)}
-                      placeholder="VD: 2026.10.05 ★ SMILE TOGETHER"
-                      className="w-full px-3 py-1.5 rounded-xl border border-gray-200 text-xs focus:ring-2 focus:ring-pink-400 bg-white"
-                    />
+                  {/* Tiêu đề dưới (Footer text) */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[11px] text-gray-600 font-semibold">Tiêu đề dưới (Chữ cuối khung):</label>
+                      <button
+                        type="button"
+                        onClick={() => setShowFooter(!showFooter)}
+                        className={`text-[10px] px-2 py-0.5 rounded-full font-bold transition-all cursor-pointer flex items-center gap-1 border ${
+                          showFooter
+                            ? 'bg-emerald-100 text-emerald-800 border-emerald-300 hover:bg-emerald-200'
+                            : 'bg-gray-200 text-gray-500 border-gray-300 hover:bg-gray-300'
+                        }`}
+                        title={showFooter ? 'Nhấn để TẮT chữ cuối khung' : 'Nhấn để BẬT chữ cuối khung'}
+                      >
+                        <span>{showFooter ? '✓ Đang BẬT' : '✕ Đã TẮT'}</span>
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="text"
+                        value={footerText}
+                        onChange={(e) => setFooterText(e.target.value)}
+                        disabled={!showFooter}
+                        placeholder="VD: 2026.10.05 ★ SMILE TOGETHER"
+                        className={`w-full px-3 py-1.5 rounded-xl border text-xs focus:ring-2 focus:ring-pink-400 bg-white transition-all ${
+                          showFooter ? 'border-gray-200 text-gray-900' : 'border-gray-200 bg-gray-100 text-gray-400 line-through opacity-70'
+                        }`}
+                      />
+                      {footerText && (
+                        <button
+                          type="button"
+                          onClick={() => setFooterText('')}
+                          title="Xoá nhanh nội dung chữ cuối"
+                          className="p-1.5 text-gray-400 hover:text-red-500 rounded-lg hover:bg-gray-100 cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2">
@@ -1910,6 +2495,24 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
+                      onClick={() => handleResetToBlankWhite(3)}
+                      title="Tạo khung mẫu 3 ảnh dọc trắng tinh mới"
+                      className="py-1 px-2.5 rounded-lg bg-indigo-100/80 text-indigo-700 border border-indigo-300 text-[11px] font-bold flex items-center gap-1 hover:bg-indigo-200 cursor-pointer shadow-2xs"
+                    >
+                      <Plus className="w-3 h-3 text-indigo-600" />
+                      <span>+ Mẫu 3 Ảnh Trắng</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleResetToBlankWhite(4)}
+                      title="Tạo khung mẫu 4 ảnh trắng tinh mới"
+                      className="py-1 px-2.5 rounded-lg bg-pink-100/80 text-pink-700 border border-pink-300 text-[11px] font-bold flex items-center gap-1 hover:bg-pink-200 cursor-pointer shadow-2xs"
+                    >
+                      <Plus className="w-3 h-3 text-pink-600" />
+                      <span>+ Mẫu 4 Ảnh Trắng</span>
+                    </button>
+                    <button
+                      type="button"
                       onClick={handleExportJson}
                       title="Xuất file mẫu để sao lưu"
                       className="py-1 px-2.5 rounded-lg bg-pink-50 text-pink-700 border border-pink-200 text-[11px] font-bold flex items-center gap-1 hover:bg-pink-100"
@@ -1992,11 +2595,9 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
                             <button
                               type="button"
                               onClick={() => {
-                                if (confirm(`Bạn có chắc muốn xoá mẫu "${cf.name}"?`)) {
-                                  onDeleteCustomFrame(cf.id);
-                                }
+                                setFrameToDelete(cf);
                               }}
-                              className="p-1.5 rounded-lg hover:bg-rose-50 text-gray-400 hover:text-rose-600 transition-colors"
+                              className="p-1.5 rounded-lg hover:bg-rose-50 text-gray-400 hover:text-rose-600 transition-colors cursor-pointer"
                               title="Xoá mẫu này"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
@@ -2111,8 +2712,22 @@ export const FrameStudioScreen: React.FC<FrameStudioScreenProps> = ({
             </p>
           </div>
         </div>
-
       </div>
+
+      {/* CẢNH BÁO XOÁ VĨNH VIỄN MODAL */}
+      <DeleteFrameModal
+        isOpen={frameToDelete !== null}
+        frame={frameToDelete}
+        onClose={() => setFrameToDelete(null)}
+        onConfirmDelete={(frameId) => {
+          if (onDeleteCustomFrame) {
+            onDeleteCustomFrame(frameId);
+          }
+          if (initialFrame.id === frameId) {
+            onBack();
+          }
+        }}
+      />
     </div>
   );
 };

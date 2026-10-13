@@ -78,5 +78,14 @@
 	<string>PhotoXinhh cần kết nối Bluetooth để điều khiển nút chụp từ xa, máy ảnh và máy in ảnh di động.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>PhotoXinhh cần kết nối Bluetooth để tìm kiếm và ghép nối thiết bị phần cứng.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>PhotoXinhh cần kết nối mạng cục bộ để điều khiển máy ảnh Sony và máy in ảnh qua Wi-Fi.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

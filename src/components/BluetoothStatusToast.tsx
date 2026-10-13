@@ -67,7 +67,7 @@ export const BluetoothStatusToast: React.FC = () => {
   if (!transfer && !printJob && !quickNotification) return null;
 
   return (
-    <div className="fixed top-16 left-1/2 -translate-x-1/2 z-[150] w-full max-w-md px-4 pointer-events-none animate-in slide-in-from-top-4 duration-300">
+    <div className="fixed top-[calc(env(safe-area-inset-top,0px)+4.25rem)] left-1/2 -translate-x-1/2 z-[150] w-full max-w-md px-4 pointer-events-none animate-in slide-in-from-top-4 duration-300">
       {/* 1. File Transfer Progress Toast */}
       {transfer && (
         <div className="bg-gray-900/95 backdrop-blur-xl border border-blue-500/40 shadow-2xl rounded-2xl p-3.5 text-white flex items-center gap-3.5 pointer-events-auto">

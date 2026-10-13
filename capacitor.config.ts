@@ -6,10 +6,15 @@ const config: CapacitorConfig = {
   webDir: 'dist',
   server: {
     androidScheme: 'https',
-    iosScheme: 'https',
+    iosScheme: 'capacitor',
   },
   ios: {
     contentInset: 'always',
+  },
+  plugins: {
+    CapacitorHttp: {
+      enabled: false,
+    },
   },
 };
 

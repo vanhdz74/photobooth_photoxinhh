@@ -68,7 +68,7 @@ export const StripDownloadView: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-pink-100 via-purple-50 to-pink-50 flex flex-col items-center justify-center p-4 text-gray-800">
+    <div className="min-h-screen bg-gradient-to-br from-pink-100 via-purple-50 to-pink-50 flex flex-col items-center justify-center px-4 pt-[max(env(safe-area-inset-top,0px),1rem)] pb-[max(env(safe-area-inset-bottom,0px),1rem)] text-gray-800">
       <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-pink-200 overflow-hidden flex flex-col items-center p-5 sm:p-6 text-center animate-in fade-in zoom-in duration-300">
         {/* Header Badge */}
         <div className="flex items-center gap-2 text-pink-600 font-cute font-bold text-lg mb-1">

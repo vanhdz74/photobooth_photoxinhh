@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Printer, Camera, Monitor, CheckCircle, Play, Shield, Cpu, Bluetooth } from 'lucide-react';
 import { cameraService, CameraDevice } from '../services/cameraService';
-import { printService } from '../services/printService';
+import { printService, PaperSizeId, PAPER_SIZES } from '../services/printService';
 import { PrinterInfo, SystemInfo } from '../types/electron';
 
 interface DeviceHubModalProps {
@@ -22,6 +22,7 @@ export const DeviceHubModal: React.FC<DeviceHubModalProps> = ({
   const [activeTab, setActiveTab] = useState<'printer' | 'camera' | 'kiosk'>('printer');
   const [printers, setPrinters] = useState<PrinterInfo[]>([]);
   const [selectedPrinter, setSelectedPrinter] = useState<string>('');
+  const [selectedPaperSize, setSelectedPaperSize] = useState<PaperSizeId>(() => printService.getSelectedPaperSize());
   const [cameras, setCameras] = useState<CameraDevice[]>([]);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [isTestingPrint, setIsTestingPrint] = useState(false);
@@ -32,26 +33,40 @@ export const DeviceHubModal: React.FC<DeviceHubModalProps> = ({
   useEffect(() => {
     if (!isOpen) return;
 
+    const savedPrinter = printService.getSelectedPrinter();
+
     // 1. Detect Electron API
     if (window.electronAPI) {
       setIsElectron(true);
       window.electronAPI.getSystemInfo().then(setSystemInfo);
       window.electronAPI.getPrinters().then((list) => {
         setPrinters(list);
-        const def = list.find((p) => p.isDefault) || list[0];
-        if (def) setSelectedPrinter(def.name);
+        if (savedPrinter && list.some((p) => p.name === savedPrinter)) {
+          setSelectedPrinter(savedPrinter);
+        } else {
+          const def = list.find((p) => p.isDefault) || list[0];
+          if (def) {
+            setSelectedPrinter(def.name);
+            printService.setSelectedPrinter(def.name);
+          }
+        }
       });
     } else {
       setIsElectron(false);
       // Fallback mock printers for web demo
       const mockList: PrinterInfo[] = [
-        { name: 'DNP DS-RX1HS', displayName: 'DNP DS-RX1HS (Máy In Nhiệt USB)', description: '4x6 Dye-Sublimation Photo Printer', status: 0, isDefault: true },
+        { name: 'Canon SELPHY CP1500', displayName: 'Canon SELPHY CP1500 (Wi-Fi/USB)', description: 'Compact Dye-Sub Photo Printer (100x148mm)', status: 0, isDefault: true },
+        { name: 'DNP DS-RX1HS', displayName: 'DNP DS-RX1HS (Máy In Nhiệt USB)', description: '4x6 Dye-Sublimation Photo Printer', status: 0, isDefault: false },
         { name: 'HiTi P525L', displayName: 'HiTi P525L Photobooth Printer', description: 'High Speed Strip Printer', status: 0, isDefault: false },
-        { name: 'Canon SELPHY CP1500', displayName: 'Canon SELPHY CP1500 (Wi-Fi/USB)', description: 'Compact Photo Printer', status: 0, isDefault: false },
         { name: 'Save as PDF', displayName: 'In Ra File PDF 4x6 / 2x6', description: 'Ảo lập kiểm tra lề in', status: 0, isDefault: false },
       ];
       setPrinters(mockList);
-      setSelectedPrinter(mockList[0].name);
+      if (savedPrinter && mockList.some((p) => p.name === savedPrinter)) {
+        setSelectedPrinter(savedPrinter);
+      } else {
+        setSelectedPrinter(mockList[0].name);
+        printService.setSelectedPrinter(mockList[0].name);
+      }
     }
 
     // 2. Load Cameras
@@ -60,30 +75,86 @@ export const DeviceHubModal: React.FC<DeviceHubModalProps> = ({
 
   if (!isOpen) return null;
 
+  const currentPaper = PAPER_SIZES[selectedPaperSize] || PAPER_SIZES['canon-cp1500-postcard'];
+
   const handleTestPrint = async () => {
     setIsTestingPrint(true);
     setPrintSuccessMessage(null);
 
-    // Create a dummy test print canvas
+    // Create high-precision alignment test pattern canvas
+    const paper = currentPaper;
     const canvas = document.createElement('canvas');
-    canvas.width = 600;
-    canvas.height = 1800;
+    canvas.width = paper.widthPx;
+    canvas.height = paper.heightPx;
     const ctx = canvas.getContext('2d');
     if (ctx) {
-      ctx.fillStyle = '#FF6EA7';
-      ctx.fillRect(0, 0, 600, 1800);
+      // 1. Background
       ctx.fillStyle = '#FFFFFF';
-      ctx.font = 'bold 36px sans-serif';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Outer margin border
+      ctx.strokeStyle = '#EC4899';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(10, 10, canvas.width - 20, canvas.height - 20);
+
+      // 2. Safe Bleed boundary (28px inside)
+      const safeMargin = paper.safeMarginPx || 28;
+      ctx.strokeStyle = '#10B981';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([12, 6]);
+      ctx.strokeRect(safeMargin, safeMargin, canvas.width - safeMargin * 2, canvas.height - safeMargin * 2);
+      ctx.setLineDash([]);
+
+      // 3. Center cut line if double layout
+      if (canvas.width >= 1000) {
+        const midX = canvas.width / 2;
+        ctx.strokeStyle = '#9CA3AF';
+        ctx.setLineDash([8, 8]);
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(midX, safeMargin);
+        ctx.lineTo(midX, canvas.height - safeMargin);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.fillStyle = '#6B7280';
+        ctx.font = '16px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('✂ ĐƯỜNG CẮT ĐÔI PHOTOBOTH ✂', midX, 40);
+        ctx.fillText('✂ ĐƯỜNG CẮT ĐÔI PHOTOBOTH ✂', midX, canvas.height - 30);
+      }
+
+      // 4. Header block
+      ctx.fillStyle = '#DB2777';
+      ctx.fillRect(safeMargin + 20, safeMargin + 60, canvas.width - (safeMargin * 2) - 40, 90);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = 'bold 32px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('PHOTOXINHH TEST PRINT', 300, 200);
-      ctx.font = '24px sans-serif';
-      ctx.fillText(`Máy in: ${selectedPrinter}`, 300, 300);
-      ctx.fillText(new Date().toLocaleString(), 300, 380);
-      ctx.fillRect(50, 450, 500, 400);
-      ctx.fillRect(50, 900, 500, 400);
+      ctx.fillText('PHOTOXINHH - TEST PATTERN', canvas.width / 2, safeMargin + 115);
+
+      // 5. Specs & Info
+      ctx.fillStyle = '#111827';
+      ctx.font = 'bold 24px sans-serif';
+      ctx.fillText(`MÁY IN: ${selectedPrinter || 'Canon SELPHY CP1500'}`, canvas.width / 2, safeMargin + 220);
+
+      ctx.font = '20px sans-serif';
+      ctx.fillStyle = '#4B5563';
+      ctx.fillText(`Khổ giấy: ${paper.name}`, canvas.width / 2, safeMargin + 260);
+      ctx.fillText(`Kích thước: ${paper.widthMm} x ${paper.heightMm} mm (${paper.widthPx} x ${paper.heightPx} px @ ${paper.dpi} DPI)`, canvas.width / 2, safeMargin + 295);
+      ctx.fillText(`Mã giấy Canon: ${paper.paperType}`, canvas.width / 2, safeMargin + 330);
+      ctx.fillText(`Thời gian in: ${new Date().toLocaleString()}`, canvas.width / 2, safeMargin + 365);
+
+      // Safe Bleed Notice
+      ctx.fillStyle = '#065F46';
+      ctx.fillRect(safeMargin + 40, safeMargin + 420, canvas.width - (safeMargin * 2) - 80, 80);
+      ctx.fillStyle = '#ECFDF5';
+      ctx.font = 'bold 18px sans-serif';
+      ctx.fillText('✓ NẾU ĐƯỜNG VIỀN XANH LÁ CÒN NGUYÊN VẸN', canvas.width / 2, safeMargin + 455);
+      ctx.font = '16px sans-serif';
+      ctx.fillText('-> Máy in in chính xác 100%, không bị xén mất chữ và logo!', canvas.width / 2, safeMargin + 482);
     }
 
-    const testUrl = canvas.toDataURL('image/jpeg');
+    const testUrl = canvas.toDataURL('image/jpeg', 0.98);
 
     if (window.electronAPI) {
       const res = await window.electronAPI.silentPrint({
@@ -91,16 +162,18 @@ export const DeviceHubModal: React.FC<DeviceHubModalProps> = ({
         dataUrl: testUrl,
         silent: true,
         copies: 1,
+        pageSize: paper.microns,
+        cssPageSize: paper.cssSize,
       });
       if (res.success) {
-        setPrintSuccessMessage(`Đã gửi lệnh in thành công đến [${selectedPrinter}]!`);
+        setPrintSuccessMessage(`Đã gửi lệnh in test khổ [${paper.shortName}] đến máy in [${selectedPrinter}]!`);
       } else {
-        setPrintSuccessMessage(`Lỗi in: ${res.error || 'Vui lòng kiểm tra cáp USB máy in'}`);
+        setPrintSuccessMessage(`Lỗi in: ${res.error || 'Vui lòng kiểm tra cáp kết nối máy in'}`);
       }
     } else {
       // Web browser print test
-      await printService.printImage(testUrl, 'Test Print');
-      setPrintSuccessMessage('Đã mở hộp thoại in thử nghiệm trên trình duyệt!');
+      await printService.printImage(testUrl, 'Test Print Pattern', selectedPrinter, selectedPaperSize);
+      setPrintSuccessMessage(`Đã mở bản in thử nghiệm khổ [${paper.shortName}] trên trình duyệt!`);
     }
     setIsTestingPrint(false);
   };
@@ -138,8 +211,20 @@ export const DeviceHubModal: React.FC<DeviceHubModalProps> = ({
             </div>
           </div>
           <button
-            onClick={onClose}
-            className="p-1.5 rounded-full text-gray-400 hover:text-white hover:bg-gray-700"
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onClose();
+            }}
+            onTouchEnd={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onClose();
+            }}
+            className="w-8 h-8 rounded-full flex items-center justify-center text-gray-400 hover:text-white hover:bg-gray-700 active:bg-gray-600 transition-all cursor-pointer active:scale-95"
+            title="Đóng"
+            aria-label="Đóng"
           >
             <X className="w-5 h-5" />
           </button>
@@ -217,7 +302,10 @@ export const DeviceHubModal: React.FC<DeviceHubModalProps> = ({
                   return (
                     <div
                       key={p.name}
-                      onClick={() => setSelectedPrinter(p.name)}
+                      onClick={() => {
+                        setSelectedPrinter(p.name);
+                        printService.setSelectedPrinter(p.name);
+                      }}
                       className={`p-3.5 rounded-2xl border cursor-pointer transition-all flex items-center justify-between ${
                         isSelected
                           ? 'border-pink-500 bg-pink-500/10 shadow-md'
@@ -249,6 +337,59 @@ export const DeviceHubModal: React.FC<DeviceHubModalProps> = ({
                     </div>
                   );
                 })}
+              </div>
+
+              {/* Paper Size Configuration for Printer */}
+              <div className="bg-gray-800/60 p-3.5 rounded-2xl border border-gray-700/80 flex flex-col gap-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-gray-200 flex items-center gap-1.5">
+                    <span>Khổ Giấy In Chuẩn (Paper Size):</span>
+                  </span>
+                  <span className="text-[11px] font-bold text-pink-400 bg-pink-500/10 px-2.5 py-0.5 rounded-lg border border-pink-500/20">
+                    {currentPaper.widthMm} x {currentPaper.heightMm} mm ({currentPaper.widthPx}x{currentPaper.heightPx} px @ 300 DPI)
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {Object.values(PAPER_SIZES).map((paper) => {
+                    const isSelected = selectedPaperSize === paper.id;
+                    const isCanonPrimary = paper.id === 'canon-cp1500-postcard';
+                    return (
+                      <button
+                        key={paper.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedPaperSize(paper.id);
+                          printService.setSelectedPaperSize(paper.id);
+                        }}
+                        className={`p-2 rounded-xl text-left border transition-all ${
+                          isSelected
+                            ? 'border-pink-500 bg-pink-500/20 text-white font-bold shadow-xs'
+                            : 'border-gray-700 bg-gray-900/60 text-gray-300 hover:border-gray-600'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="truncate text-xs font-semibold">{paper.shortName}</span>
+                          {isCanonPrimary && (
+                            <span className="text-[9px] bg-red-500 text-white font-bold px-1 rounded-sm shrink-0 ml-1">
+                              CP1500
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-gray-400 truncate mt-0.5">
+                          {paper.widthPx}×{paper.heightPx} px • {paper.widthMm}×{paper.heightMm}mm
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="text-[11px] text-gray-400 bg-gray-900/60 p-2 rounded-xl border border-gray-800 flex items-start gap-1.5">
+                  <span className="text-amber-400 font-bold shrink-0">💡 Lưu ý Canon CP1500:</span>
+                  <span>
+                    Khay Postcard KP-108IN/RP-108 có kích thước vật lý là <strong>100 x 148 mm (1181 x 1748 px @ 300 DPI)</strong>. Chọn đúng khổ này giúp ảnh in tràn viền không bị méo tỷ lệ và không bị máy in cắt mất góc chữ.
+                  </span>
+                </div>
               </div>
 
               {/* Test Print Action */}

@@ -8,6 +8,17 @@ export interface PhotoSlot {
   rotation?: number;
 }
 
+export type BackgroundFitMode = 'cover' | 'contain' | 'stretch' | 'center' | 'tile';
+
+export interface BackgroundImageConfig {
+  fit?: BackgroundFitMode;
+  scale?: number;     // 0.5 to 3.0, default 1.0
+  offsetX?: number;   // in px (-600 to 600), default 0
+  offsetY?: number;   // in px (-900 to 900), default 0
+  opacity?: number;   // 0.1 to 1.0, default 1.0
+  blur?: number;      // 0 to 30, default 0
+}
+
 export interface FrameTemplate {
   id: string;
   name: string;
@@ -20,10 +31,13 @@ export interface FrameTemplate {
   backgroundColor: string;
   backgroundGradient?: string;
   backgroundImage?: string;
+  backgroundImageConfig?: BackgroundImageConfig;
   overlaySvg?: string; // Custom SVG decorative frame
   overlayImageUrl?: string; // Custom transparent PNG frame
   headerText?: string;
   footerText?: string;
+  showHeader?: boolean;
+  showFooter?: boolean;
   themeColor: string;
   slotBorderColor?: string;
   slotBorderWidth?: number;

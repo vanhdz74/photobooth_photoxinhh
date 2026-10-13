@@ -1,34 +1,123 @@
 import { SAMPLE_PORTRAITS } from '../templates/samplePhotos';
 import { realP2PService } from './realP2PService';
+import { sonyCameraService } from './sonyCameraService';
+import { hotFolderService } from './hotFolderService';
 
 export interface CameraDevice {
   deviceId: string;
   label: string;
+  isUsb?: boolean;
+  rawLabel?: string;
 }
 
 export class CameraService {
   private currentStream: MediaStream | null = null;
   private mockPhotoIndex = 0;
 
-  async getAvailableDevices(): Promise<CameraDevice[]> {
-    const list: CameraDevice[] = [
-      { deviceId: 'phone-live-camera', label: '📡 Camera Không Dây (Live Stream từ Máy Mac / Thiết Bị Ngoài)' },
-    ];
+  async requestPermissionAndGetDevices(): Promise<CameraDevice[]> {
+    let tempStream: MediaStream | null = null;
+    try {
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
+    } catch (e) {
+      console.warn('getUserMedia permission request warning:', e);
+    }
+    const devices = await this.getAvailableDevices(false);
+    if (tempStream) {
+      tempStream.getTracks().forEach(t => t.stop());
+    }
+    return devices;
+  }
+
+  async getAvailableDevices(checkEmptyLabels = true): Promise<CameraDevice[]> {
+    const list: CameraDevice[] = [];
+    let tempStream: MediaStream | null = null;
 
     try {
       if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const videoDevices = devices
-          .filter(device => device.kind === 'videoinput')
-          .map((device, index) => ({
+        console.log('⚡️ [Camera Scan] Calling navigator.mediaDevices.enumerateDevices()...');
+        let devices = await navigator.mediaDevices.enumerateDevices();
+        let videoDevices = devices.filter(device => device.kind === 'videoinput');
+        console.log(`⚡️ [Camera Scan] Found ${videoDevices.length} raw videoinput devices:`, videoDevices.map(d => ({ id: d.deviceId, label: d.label || '(no label)' })));
+
+        // On iPadOS/Safari: Device labels are empty until an ACTIVE stream is running!
+        const hasEmptyLabels = videoDevices.length === 0 || videoDevices.some(d => !d.label);
+        if (checkEmptyLabels && hasEmptyLabels && navigator.mediaDevices.getUserMedia) {
+          try {
+            console.log('⚡️ [Camera Scan] Requesting temporary getUserMedia stream to unlock device labels on iPadOS...');
+            tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+            // Must enumerate WHILE tempStream is active on iOS WebKit
+            devices = await navigator.mediaDevices.enumerateDevices();
+            videoDevices = devices.filter(device => device.kind === 'videoinput');
+            console.log(`⚡️ [Camera Scan] After permission unlock: Found ${videoDevices.length} videoinput devices:`, videoDevices.map(d => ({ id: d.deviceId, label: d.label })));
+          } catch (err) {
+            console.warn('Could not auto-request camera permission on iOS:', err);
+          }
+        }
+
+        const formattedDevices: CameraDevice[] = videoDevices.map((device, index) => {
+          const raw = device.label || `Camera ${index + 1}`;
+          const lower = raw.toLowerCase();
+          const isInternal =
+            lower.includes('facetime') ||
+            lower.includes('front') ||
+            lower.includes('back') ||
+            lower.includes('truedepth') ||
+            lower.includes('built-in');
+
+          const isUsb =
+            lower.includes('usb') ||
+            lower.includes('capture') ||
+            lower.includes('cam link') ||
+            lower.includes('hdmi') ||
+            lower.includes('uvc') ||
+            lower.includes('elgato') ||
+            lower.includes('avermedia') ||
+            lower.includes('hagibis') ||
+            lower.includes('ugreen') ||
+            lower.includes('video') ||
+            lower.includes('external') ||
+            (!isInternal && videoDevices.length > 1);
+
+          let formattedLabel = raw;
+          if (isUsb) {
+            formattedLabel = `🔌 [Cáp USB / HDMI] ${raw}`;
+          } else if (isInternal) {
+            formattedLabel = `📱 [Camera iPad] ${raw}`;
+          } else {
+            formattedLabel = `📷 ${raw}`;
+          }
+
+          return {
             deviceId: device.deviceId,
-            label: device.label || `Camera ${index + 1}`
-          }));
-        list.push(...videoDevices);
+            label: formattedLabel,
+            isUsb,
+            rawLabel: raw,
+          };
+        });
+
+        // Put USB devices on top of hardware list
+        formattedDevices.sort((a, b) => (b.isUsb ? 1 : 0) - (a.isUsb ? 1 : 0));
+        list.push(...formattedDevices);
       }
-    } catch {
-      // ignore
+    } catch (e) {
+      console.warn('enumerateDevices error:', e);
+    } finally {
+      if (tempStream) {
+        tempStream.getTracks().forEach(t => t.stop());
+      }
     }
+
+    // Hot Folder (Sony Imaging Edge Desktop Remote Tethering)
+    list.push({
+      deviceId: 'hot-folder-camera',
+      label: '📁 [Hot Folder] Máy ảnh Sony qua Imaging Edge Remote (Ảnh gốc High-Res)',
+    });
+
+    // Wireless / Wi-Fi & Network options
+    list.push({ deviceId: 'sony-wifi-camera', label: '📡 Máy Ảnh Sony (Điều Khiển Wi-Fi Không Dây)' });
+    list.push({ deviceId: 'phone-live-camera', label: '📲 Camera Không Dây (Live Stream từ Máy Mac / Điện Thoại)' });
 
     // Always append mock option for testing without hardware
     list.push({ deviceId: 'mock-camera', label: '🎭 Fake Camera (Ảnh mẫu Studio)' });
@@ -36,28 +125,70 @@ export class CameraService {
     return list;
   }
 
+  findFirstUsbDevice(devices: CameraDevice[]): CameraDevice | undefined {
+    return devices.find(d => d.isUsb);
+  }
+
   async startStream(deviceId?: string): Promise<MediaStream | null> {
     this.stopStream();
 
-    if (deviceId === 'mock-camera' || deviceId === 'phone-live-camera') {
-      return null; // Signals to use mock rendering or Phone P2P Frame Stream
+    if (deviceId === 'mock-camera' || deviceId === 'phone-live-camera' || deviceId === 'sony-wifi-camera') {
+      if (deviceId === 'sony-wifi-camera') {
+        sonyCameraService.startLiveview().catch(() => {});
+      }
+      return null; // Signals to use mock rendering, Phone P2P, or Sony LiveView stream
+    }
+
+    // For hot-folder-camera: Try to start liveview from configured stream (Webcam, Imaging Edge Webcam, HDMI Capture)
+    let actualStreamId = deviceId;
+    if (deviceId === 'hot-folder-camera') {
+      const liveviewPref = hotFolderService.getLiveviewDeviceId();
+      if (liveviewPref && liveviewPref !== 'hot-folder-camera' && liveviewPref !== 'none') {
+        actualStreamId = liveviewPref;
+      } else {
+        actualStreamId = 'default';
+      }
     }
 
     try {
-      const constraints: MediaStreamConstraints = {
-        video: {
-          deviceId: deviceId && deviceId !== 'default' ? { exact: deviceId } : undefined,
-          width: { ideal: 1920, min: 1280 },
-          height: { ideal: 1080, min: 720 },
-          facingMode: 'user'
-        },
-        audio: false
-      };
+      let stream: MediaStream | null = null;
+      if (actualStreamId && actualStreamId !== 'default') {
+        try {
+          // 1. Try with exact deviceId
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              deviceId: { exact: actualStreamId },
+            },
+            audio: false,
+          });
+        } catch (e1) {
+          try {
+            // 2. Try with loose deviceId constraint (avoids OverconstrainedError on iPadOS)
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: { deviceId: actualStreamId },
+              audio: false,
+            });
+          } catch (e2) {
+            try {
+              // 3. Try with ideal deviceId constraint
+              stream = await navigator.mediaDevices.getUserMedia({
+                video: { deviceId: { ideal: actualStreamId } },
+                audio: false,
+              });
+            } catch (e3) {
+              // 4. Fallback to general camera stream
+              stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+            }
+          }
+        }
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
 
-      this.currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+      this.currentStream = stream;
       return this.currentStream;
     } catch (err) {
-      console.warn('Cannot access real camera, falling back to mock mode:', err);
+      console.warn('Cannot access real camera stream:', err);
       return null;
     }
   }
@@ -190,6 +321,14 @@ export class CameraService {
       return frame;
     }
     throw new Error('Chưa có tín hiệu camera. Hãy bấm "Bật Phát Camera Live" trên máy phát trước khi chụp!');
+  }
+
+  async captureFromSonyCamera(): Promise<string> {
+    return sonyCameraService.takePhoto();
+  }
+
+  async captureFromHotFolder(): Promise<string> {
+    return hotFolderService.capturePhoto();
   }
 
   async getMockPhoto(): Promise<string> {

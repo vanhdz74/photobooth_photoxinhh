@@ -34,7 +34,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   };
 
   return (
-    <header className="sticky top-0 z-40 bg-white/90 backdrop-blur-xl border-b border-pink-100/80 shadow-xs px-3 sm:px-6 py-2.5 flex items-center justify-between transition-all">
+    <header className="shrink-0 sticky top-0 z-40 bg-white/95 backdrop-blur-xl border-b border-pink-100/80 shadow-xs px-3 sm:px-6 pt-[max(env(safe-area-inset-top,0px),0.5rem)] pb-2 sm:pb-2.5 flex items-center justify-between transition-all">
       {/* Brand Logo & Studio Chip */}
       <div
         className="flex items-center gap-2 cursor-pointer group select-none"

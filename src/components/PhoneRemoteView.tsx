@@ -259,7 +259,7 @@ export const PhoneRemoteView: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-gray-950 via-gray-900 to-black text-white p-3 sm:p-6 flex flex-col items-center select-none">
+    <div className="min-h-screen bg-gradient-to-b from-gray-950 via-gray-900 to-black text-white px-3 sm:px-6 pt-[max(env(safe-area-inset-top,0px),0.75rem)] pb-[max(env(safe-area-inset-bottom,0px),1rem)] flex flex-col items-center select-none">
       {/* Hidden file inputs */}
       <input
         ref={fileInputRef}

@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback, useImperativeHandle, forwardRef } from 'react';
 import { FrameTemplate, PhotoData, StickerItem } from '../types/photobooth';
 import { PHOTO_FILTERS } from '../templates/presetFrames';
-import { Plus, Trash2, Sliders, ZoomIn, ZoomOut, RotateCw, X } from 'lucide-react';
+import { Plus, Trash2, Sliders, ZoomIn, ZoomOut, RotateCw, X, Maximize2 } from 'lucide-react';
 
 export interface CanvasRendererHandle {
   getHighResDataUrl: (scale?: number) => Promise<string>;
@@ -16,6 +16,7 @@ interface CanvasRendererProps {
   onUpdatePhoto: (slotIndex: number, updates: Partial<PhotoData>) => void;
   onUpdateSticker?: (stickerId: string, updates: Partial<StickerItem>) => void;
   onRemoveSticker?: (stickerId: string) => void;
+  onOpenLightbox?: () => void;
 }
 
 export const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(({
@@ -26,7 +27,8 @@ export const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererPro
   onRemovePhotoFromSlot,
   onUpdatePhoto,
   onUpdateSticker,
-  onRemoveSticker
+  onRemoveSticker,
+  onOpenLightbox
 }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -72,18 +74,8 @@ export const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererPro
     targetCanvas.width = width;
     targetCanvas.height = height;
 
-    // 1. Draw Background
-    if (frame.backgroundImage) {
-      try {
-        const bgImg = await loadImage(frame.backgroundImage);
-        ctx.drawImage(bgImg, 0, 0, width, height);
-      } catch (err) {
-        console.warn('Failed to load background image:', err);
-        ctx.fillStyle = frame.backgroundColor || '#FFFFFF';
-        ctx.fillRect(0, 0, width, height);
-      }
-    } else if (frame.backgroundGradient) {
-      // General Gradient generator
+    // 1. Draw Base Background (Color or Gradient)
+    if (frame.backgroundGradient) {
       const gradient = ctx.createLinearGradient(0, 0, 0, height);
       if (frame.backgroundGradient.includes('#') || frame.backgroundGradient.includes('rgb')) {
         const matches = frame.backgroundGradient.match(/(#[0-9a-fA-F]{3,8}|rgba?\([^\)]+\))/g);
@@ -104,6 +96,78 @@ export const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererPro
     } else {
       ctx.fillStyle = frame.backgroundColor || '#FFFFFF';
       ctx.fillRect(0, 0, width, height);
+    }
+
+    // 1.5 Draw Background Image with Alignment/Adjustments
+    if (frame.backgroundImage) {
+      try {
+        const bgImg = await loadImage(frame.backgroundImage);
+        const cfg = frame.backgroundImageConfig || {};
+        const fit = cfg.fit || 'cover';
+        const scale = cfg.scale !== undefined ? cfg.scale : 1.0;
+        const offsetX = (cfg.offsetX || 0) * renderScale;
+        const offsetY = (cfg.offsetY || 0) * renderScale;
+        const opacity = cfg.opacity !== undefined ? cfg.opacity : 1.0;
+        const blur = (cfg.blur || 0) * renderScale;
+
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, Math.min(1, opacity));
+        if (blur > 0) {
+          ctx.filter = `blur(${blur}px)`;
+        }
+
+        const imgW = bgImg.naturalWidth || bgImg.width || width;
+        const imgH = bgImg.naturalHeight || bgImg.height || height;
+        const imgAspect = imgW / (imgH || 1);
+        const canvasAspect = width / (height || 1);
+
+        if (fit === 'tile') {
+          const pattern = ctx.createPattern(bgImg, 'repeat');
+          if (pattern) {
+            ctx.fillStyle = pattern;
+            ctx.fillRect(0, 0, width, height);
+          }
+        } else {
+          let drawW = width;
+          let drawH = height;
+
+          if (fit === 'contain') {
+            if (imgAspect > canvasAspect) {
+              drawW = width;
+              drawH = width / imgAspect;
+            } else {
+              drawH = height;
+              drawW = height * imgAspect;
+            }
+          } else if (fit === 'cover') {
+            if (imgAspect > canvasAspect) {
+              drawH = height;
+              drawW = height * imgAspect;
+            } else {
+              drawW = width;
+              drawH = width / imgAspect;
+            }
+          } else if (fit === 'center') {
+            drawW = imgW * renderScale;
+            drawH = imgH * renderScale;
+          } else if (fit === 'stretch') {
+            drawW = width;
+            drawH = height;
+          }
+
+          drawW *= scale;
+          drawH *= scale;
+
+          const drawX = (width - drawW) / 2 + offsetX;
+          const drawY = (height - drawH) / 2 + offsetY;
+
+          ctx.drawImage(bgImg, drawX, drawY, drawW, drawH);
+        }
+
+        ctx.restore();
+      } catch (err) {
+        console.warn('Failed to load background image:', err);
+      }
     }
 
     // Pattern Overlays (Polka dots, Grid, Diagonal Stripes, Stars, Hearts, Flowers, Film)
@@ -380,7 +444,7 @@ export const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererPro
 
     // 4. Draw Header Text
     const fontFam = frame.fontFamily || "'Plus Jakarta Sans', sans-serif";
-    if (frame.headerText) {
+    if (frame.headerText && frame.showHeader !== false) {
       ctx.save();
       ctx.fillStyle = frame.themeColor || '#111827';
       ctx.font = `bold ${18 * renderScale}px ${fontFam}`;
@@ -391,7 +455,7 @@ export const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererPro
     }
 
     // 4. Draw Footer Text
-    if (frame.footerText) {
+    if (frame.footerText && frame.showFooter !== false) {
       ctx.save();
       ctx.fillStyle = frame.themeColor || '#111827';
       ctx.font = `600 ${15 * renderScale}px ${fontFam}`;
@@ -414,7 +478,7 @@ export const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererPro
       if (sticker.type === 'image') {
         try {
           const sImg = await loadImage(sticker.content);
-          const baseSize = (sticker.width || 120) * (sticker.scale || 1.0) * renderScale;
+          const baseSize = (sticker.width || 75) * (sticker.scale || 1.0) * renderScale;
           const aspect = (sImg.width || 1) / (sImg.height || 1);
           let dw = baseSize;
           let dh = baseSize;
@@ -428,7 +492,7 @@ export const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererPro
           // fallback
         }
       } else if (sticker.type === 'text') {
-        const fSize = 28 * (sticker.scale || 1.0) * renderScale;
+        const fSize = 22 * (sticker.scale || 1.0) * renderScale;
         const fFam = sticker.fontFamily || "'Plus Jakarta Sans', sans-serif";
         ctx.font = `bold ${fSize}px ${fFam}`;
         ctx.fillStyle = sticker.color || frame.themeColor || '#111827';
@@ -436,7 +500,7 @@ export const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererPro
         ctx.textBaseline = 'middle';
         ctx.fillText(sticker.content, 0, 0);
       } else {
-        ctx.font = `${42 * (sticker.scale || 1.0) * renderScale}px sans-serif`;
+        ctx.font = `${30 * (sticker.scale || 1.0) * renderScale}px sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(sticker.content, 0, 0);
@@ -525,7 +589,7 @@ export const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererPro
   };
 
   return (
-    <div className="relative flex flex-col items-center justify-center p-2">
+    <div className="relative flex-1 min-h-0 w-full h-full flex flex-col items-center justify-center p-0 overflow-hidden">
       {/* Hidden file input for slot uploads */}
       <input
         ref={fileInputRef}
@@ -535,13 +599,13 @@ export const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererPro
         className="hidden"
       />
 
-
-
       {/* Main Canvas with Interactive Slot & Sticker Overlays */}
       <div
         ref={containerRef}
         onClick={() => setSelectedStickerId(null)}
-        className="relative photobooth-shadow rounded-2xl overflow-hidden select-none max-h-[46vh] sm:max-h-[62vh] max-w-[280px] sm:max-w-[320px] w-auto h-auto mx-auto"
+        className={`relative photobooth-shadow rounded-2xl overflow-hidden select-none max-h-full ${
+          frame.aspectRatio === '4x6' ? 'max-w-[300px] sm:max-w-[340px]' : 'max-w-[240px] sm:max-w-[270px]'
+        } w-auto h-auto mx-auto my-auto`}
         style={{
           aspectRatio: `${frame.width} / ${frame.height}`,
         }}
@@ -550,6 +614,22 @@ export const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererPro
           ref={canvasRef}
           className="w-full h-full block cursor-pointer"
         />
+
+        {/* Floating Quick Zoom Button */}
+        {onOpenLightbox && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenLightbox();
+            }}
+            className="absolute top-3 right-3 bg-black/80 hover:bg-pink-600 text-white text-xs font-bold px-3 py-1.5 rounded-xl backdrop-blur-md flex items-center gap-1.5 shadow-lg opacity-90 hover:opacity-100 transition-all hover:scale-105 active:scale-95 z-30 cursor-pointer border border-white/20"
+            title="Nhấn để phóng to toàn màn hình xem ảnh chất lượng cao 300 DPI"
+          >
+            <Maximize2 className="w-3.5 h-3.5 text-pink-300" />
+            <span>Phóng to</span>
+          </button>
+        )}
 
         {/* Clickable slot hotspot overlays */}
         {frame.slots.map((slot) => {
@@ -588,11 +668,12 @@ export const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererPro
           );
         })}
 
-        {/* Interactive Draggable Sticker Elements on Top */}
+        {/* Interactive Draggable Sticker Hitboxes on Top */}
         {stickers.map((stk) => {
           const isSelected = selectedStickerId === stk.id;
           const leftPct = (stk.x / frame.width) * 100;
           const topPct = (stk.y / frame.height) * 100;
+          const baseWidthPct = ((stk.width || 75) / frame.width) * 100;
 
           return (
             <div
@@ -607,52 +688,31 @@ export const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererPro
               style={{
                 left: `${leftPct}%`,
                 top: `${topPct}%`,
-                transform: `translate(-50%, -50%) rotate(${stk.rotation || 0}deg) scale(${stk.scale || 1.0})`,
+                width: `${baseWidthPct * (stk.scale || 1.0)}%`,
+                aspectRatio: '1 / 1',
+                transform: `translate(-50%, -50%) rotate(${stk.rotation || 0}deg)`,
                 touchAction: 'none',
               }}
-              className={`absolute cursor-grab active:cursor-grabbing p-1.5 transition-shadow z-20 ${
+              className={`absolute cursor-grab active:cursor-grabbing transition-all z-20 flex items-center justify-center ${
                 isSelected
-                  ? 'ring-2 ring-pink-500 rounded-xl bg-white/30 backdrop-blur-xs shadow-lg'
-                  : 'hover:ring-1 hover:ring-pink-300 rounded-lg'
+                  ? 'ring-2 ring-pink-500 rounded-lg bg-pink-500/10 shadow-sm'
+                  : 'hover:ring-1 hover:ring-pink-400/50 rounded-md'
               }`}
             >
-              {/* Sticker Content View */}
-              {stk.type === 'image' ? (
-                <img
-                  src={stk.content}
-                  alt="Sticker"
-                  className="w-16 h-16 object-contain pointer-events-none drop-shadow-md"
-                />
-              ) : stk.type === 'text' ? (
-                <span
-                  style={{
-                    fontFamily: stk.fontFamily || "'Plus Jakarta Sans', sans-serif",
-                    color: stk.color || '#111827',
-                  }}
-                  className="font-bold text-base whitespace-nowrap drop-shadow-sm select-none"
-                >
-                  {stk.content}
-                </span>
-              ) : (
-                <span className="text-3xl drop-shadow-md select-none leading-none">
-                  {stk.content}
-                </span>
-              )}
-
               {/* Floating Canva Tooltip when Sticker is Selected */}
               {isSelected && (
                 <div
                   onClick={(e) => e.stopPropagation()}
-                  className="absolute -top-10 left-1/2 -translate-x-1/2 bg-gray-900/90 text-white rounded-full py-1 px-2 flex items-center gap-1.5 shadow-xl text-[11px] backdrop-blur-md z-30"
+                  className="absolute -top-9 left-1/2 -translate-x-1/2 bg-gray-900/90 text-white rounded-full py-1 px-2 flex items-center gap-1 shadow-xl text-[11px] backdrop-blur-md z-30"
                   style={{
-                    transform: `translate(-50%, -50%) scale(${1 / (stk.scale || 1.0)}) rotate(${-stk.rotation || 0}deg)`,
+                    transform: `translate(-50%, -50%) rotate(${-stk.rotation || 0}deg)`,
                   }}
                 >
                   {/* Zoom In */}
                   <button
                     type="button"
                     title="Phóng to"
-                    onClick={() => onUpdateSticker && onUpdateSticker(stk.id, { scale: Math.min(2.5, (stk.scale || 1.0) + 0.15) })}
+                    onClick={() => onUpdateSticker && onUpdateSticker(stk.id, { scale: Math.min(2.5, Number(((stk.scale || 1.0) + 0.15).toFixed(2))) })}
                     className="p-1 hover:bg-white/20 rounded-full text-pink-300"
                   >
                     <ZoomIn className="w-3.5 h-3.5" />
@@ -662,7 +722,7 @@ export const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererPro
                   <button
                     type="button"
                     title="Thu nhỏ"
-                    onClick={() => onUpdateSticker && onUpdateSticker(stk.id, { scale: Math.max(0.4, (stk.scale || 1.0) - 0.15) })}
+                    onClick={() => onUpdateSticker && onUpdateSticker(stk.id, { scale: Math.max(0.4, Number(((stk.scale || 1.0) - 0.15).toFixed(2))) })}
                     className="p-1 hover:bg-white/20 rounded-full text-pink-300"
                   >
                     <ZoomOut className="w-3.5 h-3.5" />
@@ -679,17 +739,19 @@ export const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererPro
                   </button>
 
                   {/* Delete */}
-                  <button
-                    type="button"
-                    title="Xoá sticker"
-                    onClick={() => {
-                      if (onRemoveSticker) onRemoveSticker(stk.id);
-                      setSelectedStickerId(null);
-                    }}
-                    className="p-1 hover:bg-rose-500 rounded-full text-rose-300 hover:text-white"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  {onRemoveSticker && (
+                    <button
+                      type="button"
+                      title="Xoá sticker"
+                      onClick={() => {
+                        onRemoveSticker(stk.id);
+                        setSelectedStickerId(null);
+                      }}
+                      className="p-1 hover:bg-rose-500 rounded-full text-rose-300 hover:text-white"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
 
                   {/* Close Selection */}
                   <button

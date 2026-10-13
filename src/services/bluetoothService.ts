@@ -4,6 +4,12 @@ import { Capacitor } from '@capacitor/core';
 import { BleClient } from '@capacitor-community/bluetooth-le';
 
 export type BluetoothDeviceType = 'phone' | 'camera' | 'printer' | 'remote' | 'other';
+export type BleScanFilterMode = 'named_only' | 'cameras' | 'printers' | 'remotes' | 'custom' | 'all';
+
+export interface BleScanOptions {
+  mode?: BleScanFilterMode;
+  customPrefix?: string;
+}
 
 export interface BluetoothDevice {
   id: string;
@@ -256,7 +262,7 @@ class BluetoothService {
   }
 
   // Real Hardware Bluetooth Scan (Supports both Native iOS Capacitor BLE & Web Bluetooth API)
-  async scanRealWebBluetooth(): Promise<{ success: boolean; error?: string; isSafari?: boolean }> {
+  async scanRealWebBluetooth(options: BleScanOptions = { mode: 'named_only' }): Promise<{ success: boolean; error?: string; isSafari?: boolean }> {
     sounds.playBluetoothPing();
     this.isScanning = true;
 
@@ -272,6 +278,7 @@ class BluetoothService {
           optionalServices: [
             '0000180f-0000-1000-8000-00805f9b34fb', // Battery
             '0000180a-0000-1000-8000-00805f9b34fb', // Device Info
+            '0000ffe0-0000-1000-8000-00805f9b34fb', // SPP Serial
           ],
         });
 
@@ -309,7 +316,7 @@ class BluetoothService {
       }
     }
 
-    // 2. Web Bluetooth API (for Chrome / Edge / Arc)
+    // 2. Web Bluetooth API (for Chrome / Edge / Arc / Chromium)
     const nav = navigator as unknown as {
       bluetooth?: {
         requestDevice: (options: object) => Promise<{
@@ -338,67 +345,169 @@ class BluetoothService {
         success: false,
         isSafari,
         error: isSafari
-          ? 'Trình duyệt Safari hiện tại chưa hỗ trợ Web Bluetooth GATT trực tiếp.'
+          ? 'Trình duyệt Safari hiện tại chưa hỗ trợ Web Bluetooth GATT trực tiếp. Bạn hãy dùng Google Chrome, Edge hoặc kết nối nút chụp qua Tab "🔘 Nút Chụp Bluetooth (HID)"!'
           : 'Trình duyệt hiện tại chưa hỗ trợ Web Bluetooth API. Hãy mở bằng Google Chrome, Edge hoặc Arc.',
       };
     }
 
     try {
+      const mode = options.mode || 'named_only';
+      const customPrefix = options.customPrefix?.trim() || '';
+
+      const standardOptionalServices = [
+        'battery_service',
+        'device_information',
+        'generic_access',
+        '0000180f-0000-1000-8000-00805f9b34fb', // Battery
+        '0000180a-0000-1000-8000-00805f9b34fb', // Device Info
+        '00001800-0000-1000-8000-00805f9b34fb', // Generic Access
+        '0000ffe0-0000-1000-8000-00805f9b34fb', // SPP Serial
+        '0000ff00-0000-1000-8000-00805f9b34fb', // Custom BLE
+        'e7810a71-73ae-499d-8c15-faa9aef0c3f2', // Extended Serial
+        '49535343-fe7d-4ae5-8fa9-9fafd205e455', // Microchip UART
+      ];
+
+      let requestParams: Record<string, unknown> = {};
+
+      if (mode === 'named_only') {
+        // Build filters for all alphanumeric prefixes (A-Z, a-z, 0-9) to completely exclude nameless/unknown BLE beacons
+        const alphanumeric = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'.split('');
+        const filters = alphanumeric.map((ch) => ({ namePrefix: ch }));
+        requestParams = {
+          filters,
+          optionalServices: standardOptionalServices,
+        };
+      } else if (mode === 'cameras') {
+        const cameraPrefixes = [
+          'Canon', 'EOS', 'CANON', 'eos',
+          'Sony', 'SONY', 'ILCE', 'ZV-', 'Alpha',
+          'Nikon', 'NIKON', 'Z5', 'Z6', 'Zfc',
+          'FUJIFILM', 'Fujifilm', 'Fuji', 'X-T', 'X-E', 'X100', 'Instax', 'INSTAX',
+          'Panasonic', 'LUMIX', 'Lumix',
+          'GoPro', 'GOPRO', 'DJI', 'Osmo', 'Insta360',
+          'Camera', 'Cam',
+        ];
+        requestParams = {
+          filters: cameraPrefixes.map((p) => ({ namePrefix: p })),
+          optionalServices: standardOptionalServices,
+        };
+      } else if (mode === 'printers') {
+        const printerPrefixes = [
+          'SELPHY', 'Selphy', 'CP1500', 'CP1300', 'CP1200', 'CP1000',
+          'Canon', 'CANON',
+          'Instax', 'INSTAX', 'SHARE', 'LiPlay',
+          'POS', 'pos', 'Printer', 'PRINTER', 'Thermal',
+          'XP-', 'XP', 'MPT', 'PT-', 'MTP', 'RP', 'RPP',
+          'DNP', 'HiTi', 'Citizen', 'Brother', 'EPSON', 'Epson',
+          'BLE-Print', 'Bluetooth Printer', 'MobiPrint',
+        ];
+        requestParams = {
+          filters: printerPrefixes.map((p) => ({ namePrefix: p })),
+          optionalServices: standardOptionalServices,
+        };
+      } else if (mode === 'remotes') {
+        const remotePrefixes = [
+          'AB Shutter', 'AB Shutter3', 'Shutter', 'SHUTTER',
+          'Selfie', 'SELFIE', 'Remote', 'REMOTE',
+          'Clicker', 'CLICKER', 'Button', 'BUTTON',
+          'BLE Remote', 'Wireless Shutter', 'BT Shutter',
+          'iShutter', 'BR-E1', 'RMT-', 'ML-L7',
+        ];
+        requestParams = {
+          filters: remotePrefixes.map((p) => ({ namePrefix: p })),
+          optionalServices: standardOptionalServices,
+        };
+      } else if (mode === 'custom' && customPrefix) {
+        requestParams = {
+          filters: [{ namePrefix: customPrefix }],
+          optionalServices: standardOptionalServices,
+        };
+      } else {
+        // Raw Scan: Accept all devices (includes nameless beacons)
+        requestParams = {
+          acceptAllDevices: true,
+          optionalServices: standardOptionalServices,
+        };
+      }
+
       // Call Native OS Bluetooth Sheet to scan REAL devices
-      const realDevice = await nav.bluetooth.requestDevice({
-        acceptAllDevices: true,
-        optionalServices: [
-          'battery_service',
-          'device_information',
-          'generic_access',
-          '0000180f-0000-1000-8000-00805f9b34fb', // Battery
-          '0000180a-0000-1000-8000-00805f9b34fb', // Device Info
-          '00001812-0000-1000-8000-00805f9b34fb', // HID Shutter
-          '0000ffe0-0000-1000-8000-00805f9b34fb', // SPP Serial
-          '0000ff00-0000-1000-8000-00805f9b34fb', // Custom BLE
-        ],
-      });
+      const realDevice = await nav.bluetooth.requestDevice(requestParams);
 
       this.isScanning = false;
 
-      // Determine device category
-      const devName = realDevice.name || `Thiết bị Bluetooth (${realDevice.id.slice(0, 5)})`;
-      let type: BluetoothDeviceType = 'other';
-      const lower = devName.toLowerCase();
-      if (lower.includes('phone') || lower.includes('iphone') || lower.includes('galaxy') || lower.includes('xiaomi') || lower.includes('ipad')) {
-        type = 'phone';
-      } else if (lower.includes('cam') || lower.includes('canon') || lower.includes('sony') || lower.includes('nikon') || lower.includes('fuji')) {
-        type = 'camera';
-      } else if (lower.includes('print') || lower.includes('selphy') || lower.includes('instax') || lower.includes('dnp') || lower.includes('pos')) {
-        type = 'printer';
-      } else if (lower.includes('shutter') || lower.includes('remote') || lower.includes('button') || lower.includes('clicker')) {
-        type = 'remote';
-      }
-
-      // Read real battery if available via GATT
+      // Extract device name & info
+      let rawDevName = realDevice.name?.trim() || '';
+      let realBrand = 'Bluetooth Hardware';
+      let realModel = 'Thiết Bị BLE';
       let realBattery = 95;
+      const servicesFound: string[] = ['BLE Active'];
+
+      // Read real GATT information if available
       if (realDevice.gatt) {
         try {
           const server = await realDevice.gatt.connect();
+
+          // 1. Read Battery Level
           try {
             const batteryService = await server.getPrimaryService('battery_service');
             const char = await batteryService.getCharacteristic('battery_level');
             const value = await char.readValue();
             realBattery = value.getUint8(0);
+            servicesFound.push('Battery Service');
           } catch {
-            // Battery service not exposed by this hardware
+            // Battery service not exposed
+          }
+
+          // 2. Read Device Information Service
+          try {
+            const infoService = await server.getPrimaryService('device_information');
+            servicesFound.push('Device Information');
+
+            // Manufacturer Name (0x2A29)
+            try {
+              const mfgChar = await infoService.getCharacteristic('00002a29-0000-1000-8000-00805f9b34fb');
+              const mfgVal = await mfgChar.readValue();
+              const mfgStr = new TextDecoder('utf-8').decode(mfgVal).trim();
+              if (mfgStr) realBrand = mfgStr;
+            } catch {}
+
+            // Model Number (0x2A24)
+            try {
+              const modelChar = await infoService.getCharacteristic('00002a24-0000-1000-8000-00805f9b34fb');
+              const modelVal = await modelChar.readValue();
+              const modelStr = new TextDecoder('utf-8').decode(modelVal).trim();
+              if (modelStr) realModel = modelStr;
+            } catch {}
+          } catch {
+            // Device info service not exposed
           }
         } catch {
           // GATT connect fallback
         }
       }
 
+      // Final name calculation
+      const devName = rawDevName || (realBrand !== 'Bluetooth Hardware' ? `${realBrand} ${realModel}` : `Thiết bị BLE (${realDevice.id.slice(0, 5)})`);
+
+      // Determine device category
+      let type: BluetoothDeviceType = 'other';
+      const lower = (devName + ' ' + realBrand + ' ' + realModel).toLowerCase();
+      if (lower.includes('phone') || lower.includes('iphone') || lower.includes('galaxy') || lower.includes('xiaomi') || lower.includes('pixel') || lower.includes('ipad')) {
+        type = 'phone';
+      } else if (lower.includes('cam') || lower.includes('canon') || lower.includes('sony') || lower.includes('nikon') || lower.includes('fuji') || lower.includes('lumix') || lower.includes('gopro') || lower.includes('osmo') || lower.includes('insta360')) {
+        type = 'camera';
+      } else if (lower.includes('print') || lower.includes('selphy') || lower.includes('instax') || lower.includes('dnp') || lower.includes('pos') || lower.includes('thermal') || lower.includes('hiti') || lower.includes('brother') || lower.includes('epson')) {
+        type = 'printer';
+      } else if (lower.includes('shutter') || lower.includes('remote') || lower.includes('button') || lower.includes('clicker') || lower.includes('selfie') || lower.includes('key')) {
+        type = 'remote';
+      }
+
       const newDev: BluetoothDevice = {
         id: `real-${realDevice.id}`,
         name: devName,
         type: type,
-        modelName: 'Thiết Bị Bluetooth Thật (Phần Cứng)',
-        brand: 'Real Bluetooth Hardware',
+        modelName: realModel !== 'Thiết Bị BLE' ? realModel : 'Thiết Bị Bluetooth Thật (Phần Cứng)',
+        brand: realBrand,
         rssi: -45,
         batteryLevel: realBattery,
         macAddress: 'BLE:HW:' + realDevice.id.slice(0, 8).toUpperCase(),
@@ -409,7 +518,7 @@ class BluetoothService {
         lastSeen: Date.now(),
         details: {
           protocol: 'Web Bluetooth GATT Native',
-          services: ['GATT Server', 'BLE Active'],
+          services: servicesFound,
         },
       };
 
@@ -425,8 +534,11 @@ class BluetoothService {
     } catch (err: unknown) {
       this.isScanning = false;
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('User cancelled')) {
-        return { success: false, error: 'Người dùng đã hủy chọn thiết bị Bluetooth.' };
+      if (msg.includes('User cancelled') || msg.includes('cancelled') || msg.includes('User canceled')) {
+        return { success: false, error: 'Đã đóng hộp thoại chọn thiết bị Bluetooth.' };
+      }
+      if (msg.includes('Bluetooth adapter not available') || msg.includes('Bluetooth is not powered on')) {
+        return { success: false, error: 'Bluetooth trên thiết bị của bạn đang tắt. Vui lòng bật Bluetooth trong Cài đặt hệ điều hành.' };
       }
       return { success: false, error: msg };
     }

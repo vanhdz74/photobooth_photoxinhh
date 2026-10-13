@@ -9,20 +9,27 @@ import {
   Bluetooth,
   Home,
   Camera,
-  CheckCircle2
+  CheckCircle2,
+  Maximize2,
+  Layers,
+  ShieldCheck,
+  SlidersHorizontal,
+  Info,
+  AlertTriangle,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import confetti from 'canvas-confetti';
-import { printService } from '../services/printService';
+import { printService, PaperSizeId, PAPER_SIZES } from '../services/printService';
 import { bluetoothService, BluetoothDevice } from '../services/bluetoothService';
 import { realP2PService } from '../services/realP2PService';
-
 import { safeStoreStrip } from '../utils/safeStorage';
+import { ImageLightboxModal } from './ImageLightboxModal';
 
 interface ExportModalProps {
   isOpen: boolean;
   onClose: () => void;
   singleStripDataUrl: string;
+  aspectRatio?: '2x6' | '4x6' | '1x1';
   onOpenBluetooth?: () => void;
   onStartNewShoot?: () => void;
 }
@@ -31,17 +38,31 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   isOpen,
   onClose,
   singleStripDataUrl,
+  aspectRatio = '2x6',
   onOpenBluetooth,
-  onStartNewShoot
+  onStartNewShoot,
 }) => {
-  const [doubleStripUrl, setDoubleStripUrl] = useState<string>('');
-  const [printLayout, setPrintLayout] = useState<'single' | 'double'>('single');
+  const [selectedPaperSize, setSelectedPaperSize] = useState<PaperSizeId>(() => printService.getSelectedPaperSize());
+  const [safeBleed, setSafeBleed] = useState<boolean>(true);
+  const [renderedPrintUrl, setRenderedPrintUrl] = useState<string>('');
+  const [printLayout, setPrintLayout] = useState<'single' | 'double'>(() => (aspectRatio === '4x6' ? 'single' : 'double'));
+
+  useEffect(() => {
+    if (isOpen) {
+      setPrintLayout(aspectRatio === '4x6' ? 'single' : 'double');
+    }
+  }, [isOpen, aspectRatio]);
   const [isPrinting, setIsPrinting] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [shareId] = useState<string>(() => `strip_${Date.now()}`);
   const [connectedDevices, setConnectedDevices] = useState<BluetoothDevice[]>([]);
   const [btStatusMsg, setBtStatusMsg] = useState<string | null>(null);
+
+  // Fullscreen Zoom / Lightbox State
+  const [isLightboxOpen, setIsLightboxOpen] = useState(false);
+
+  const currentPaper = PAPER_SIZES[selectedPaperSize] || PAPER_SIZES['canon-cp1500-postcard'];
 
   useEffect(() => {
     const unsub = bluetoothService.subscribe((devs) => {
@@ -50,7 +71,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     return unsub;
   }, []);
 
-  // Real LAN / QR Share Link that any smartphone on Wi-Fi can scan and download
+  // Real LAN / QR Share Link
   const shareUrl = (() => {
     const protocol = typeof window !== 'undefined' && window.location.protocol.startsWith('https') ? 'https:' : 'http:';
     let host = typeof window !== 'undefined' ? window.location.host : '192.168.0.117:5173';
@@ -60,54 +81,93 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     return `${protocol}//${host}/?view_strip=${shareId}`;
   })();
 
+  // Render high-res print canvas whenever strip, paper size, layout or safe-bleed changes
   useEffect(() => {
     if (isOpen && singleStripDataUrl) {
-      // Safely store in memory/storage without QuotaExceededError
+      let isMounted = true;
+      printService
+        .createPrintCanvas(singleStripDataUrl, selectedPaperSize, {
+          layout: printLayout,
+          safeBleed,
+        })
+        .then((url) => {
+          if (isMounted && url) {
+            setRenderedPrintUrl(url);
+          }
+        })
+        .catch((err) => {
+          console.warn('Error generating print canvas:', err);
+        });
+
+      return () => {
+        isMounted = false;
+      };
+    }
+  }, [isOpen, singleStripDataUrl, selectedPaperSize, printLayout, safeBleed]);
+
+  useEffect(() => {
+    if (isOpen && singleStripDataUrl) {
       safeStoreStrip(`px_share_${shareId}`, singleStripDataUrl);
       safeStoreStrip('px_latest_strip', singleStripDataUrl);
 
-      // Automatically deliver strip to connected phone remotes
       try {
         realP2PService.sendStripToPhones(singleStripDataUrl, 'Dải ảnh Photobooth');
       } catch (err) {
         console.warn('Could not broadcast strip to remotes:', err);
       }
 
-      // Fire celebration confetti
       try {
         confetti({
-          particleCount: 70,
-          spread: 60,
-          origin: { y: 0.6 }
+          particleCount: 50,
+          spread: 55,
+          origin: { y: 0.6 },
         });
-      } catch {}
-
-      // Generate 4x6 double strip in background
-      try {
-        printService.createDoubleStripCanvas(singleStripDataUrl).then((url) => {
-          if (url) setDoubleStripUrl(url);
-        }).catch(() => {});
       } catch {}
     }
   }, [isOpen, singleStripDataUrl, shareId]);
 
   if (!isOpen) return null;
 
-  const currentActiveUrl = printLayout === 'double' && doubleStripUrl ? doubleStripUrl : singleStripDataUrl;
+  const currentActiveUrl = renderedPrintUrl || singleStripDataUrl;
+
+  const handlePaperSizeChange = (newSize: PaperSizeId) => {
+    setSelectedPaperSize(newSize);
+    printService.setSelectedPaperSize(newSize);
+  };
 
   const handleDownload = async () => {
     setIsSaved(true);
-    await printService.downloadImage(
-      currentActiveUrl,
-      `photoxinhh_${printLayout === 'double' ? '4x6_double' : '2x6_strip'}_${Date.now()}.png`
-    );
-    setTimeout(() => setIsSaved(false), 3500);
+    const targetUrl = currentActiveUrl;
+    const filename = `photoxinhh_${currentPaper.id}_${currentPaper.widthMm}x${currentPaper.heightMm}mm_${currentPaper.widthPx}x${currentPaper.heightPx}px_${Date.now()}.png`;
+    await printService.downloadImage(targetUrl, filename);
+    setTimeout(() => setIsSaved(false), 3000);
   };
 
   const handlePrint = async () => {
     setIsPrinting(true);
-    await printService.printImage(currentActiveUrl, 'PhotoXinhh Print');
+    const targetUrl = currentActiveUrl;
+    await printService.printImage(
+      targetUrl,
+      `PhotoXinhh Print - ${currentPaper.name}`,
+      undefined,
+      selectedPaperSize
+    );
     setIsPrinting(false);
+  };
+
+  const handlePrintSPL = async () => {
+    setIsPrinting(true);
+    setBtStatusMsg(`Đang chuẩn bị khổ ${currentPaper.shortName} (${currentPaper.widthPx}x${currentPaper.heightPx} px)...`);
+    const targetUrl = currentActiveUrl;
+    await printService.printImage(
+      targetUrl,
+      `Dải Ảnh Canon SELPHY CP1500 (${currentPaper.shortName})`,
+      undefined,
+      selectedPaperSize
+    );
+    setIsPrinting(false);
+    setBtStatusMsg(`✓ Đã gửi lệnh in khổ ${currentPaper.shortName}! Kiểm tra khay giấy máy in.`);
+    setTimeout(() => setBtStatusMsg(null), 5000);
   };
 
   const handleCopyLink = () => {
@@ -128,10 +188,10 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     }
 
     const targetPhone = phones[0];
-    setBtStatusMsg(`Đang bắn ảnh sang [${targetPhone.name}]...`);
+    setBtStatusMsg(`Đang gửi ảnh sang [${targetPhone.name}]...`);
     await bluetoothService.sendStripToPhone(targetPhone.id, currentActiveUrl);
     setBtStatusMsg(`Đã gửi thành công sang ${targetPhone.name}!`);
-    setTimeout(() => setBtStatusMsg(null), 3500);
+    setTimeout(() => setBtStatusMsg(null), 3000);
   };
 
   const handlePrintBluetooth = async () => {
@@ -149,196 +209,344 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     setBtStatusMsg(`Đang in qua [${targetPrinter.name}]...`);
     await bluetoothService.printViaBluetooth(targetPrinter.id, currentActiveUrl);
     setBtStatusMsg(`In hoàn tất trên ${targetPrinter.name}!`);
-    setTimeout(() => setBtStatusMsg(null), 3500);
+    setTimeout(() => setBtStatusMsg(null), 3000);
+  };
+
+  const handleOpenLightbox = () => {
+    setIsLightboxOpen(true);
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 animate-in fade-in duration-200">
-      <div className="bg-white rounded-3xl max-w-3xl w-full overflow-hidden shadow-2xl border border-pink-100 flex flex-col max-h-[94vh]">
-        
-        {/* Top Header */}
-        <div className="px-5 sm:px-6 py-3.5 bg-gradient-to-r from-pink-500 via-rose-500 to-purple-600 text-white flex items-center justify-between shadow-xs">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center text-amber-300 shadow-inner">
-              <Sparkles className="w-4 h-4 animate-spin" />
-            </div>
-            <div>
-              <h2 className="text-base sm:text-lg font-bold font-cute leading-tight flex items-center gap-1.5">
-                <span>Ảnh Của Bạn Đã Sẵn Sàng!</span>
-                <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded-full font-sans font-bold">300 DPI HD</span>
-              </h2>
-              <p className="text-[11px] text-pink-100 hidden sm:block">
-                Lưu về máy, quét mã QR tải về điện thoại hoặc in ảnh ngay tại Booth
-              </p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1.5 rounded-full text-white/80 hover:text-white hover:bg-white/20 transition-all cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Content Body: 2 Columns */}
-        <div className="p-4 sm:p-6 overflow-y-auto flex-1 flex flex-col md:flex-row gap-5 items-center justify-between">
+    <>
+      {/* MAIN EXPORT MODAL */}
+      <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-3 sm:p-5 animate-in fade-in duration-200">
+        <div className="bg-white rounded-3xl max-w-4xl w-full overflow-hidden shadow-2xl border border-pink-100/90 flex flex-col max-h-[94vh]">
           
-          {/* Left: Strip Preview */}
-          <div className="flex-1 flex flex-col items-center justify-center w-full">
-            <div className="relative p-2 bg-gray-50 rounded-2xl border border-pink-100 shadow-inner max-h-[420px] flex items-center justify-center">
-              {currentActiveUrl ? (
-                <img
-                  src={currentActiveUrl}
-                  alt="Photobooth Strip Preview"
-                  className="max-h-[380px] object-contain rounded-xl shadow-md"
-                />
-              ) : (
-                <div className="w-48 h-80 bg-gray-200 rounded-xl flex items-center justify-center text-gray-400 text-xs">
-                  Đang tải ảnh...
-                </div>
-              )}
-            </div>
-
-            {/* Layout switch pills */}
-            <div className="flex items-center gap-1.5 mt-3 bg-gray-100 p-1 rounded-xl text-xs font-semibold">
-              <button
-                type="button"
-                onClick={() => setPrintLayout('single')}
-                className={`px-3 py-1 rounded-lg transition-all ${
-                  printLayout === 'single'
-                    ? 'bg-white text-pink-600 shadow-xs font-bold'
-                    : 'text-gray-500 hover:text-gray-800'
-                }`}
-              >
-                Khổ 2x6 (Dải Đơn)
-              </button>
-              <button
-                type="button"
-                onClick={() => setPrintLayout('double')}
-                className={`px-3 py-1 rounded-lg transition-all ${
-                  printLayout === 'double'
-                    ? 'bg-white text-pink-600 shadow-xs font-bold'
-                    : 'text-gray-500 hover:text-gray-800'
-                }`}
-              >
-                Khổ 4x6 (2 Dải Cắt Đôi)
-              </button>
-            </div>
-
-            <p className="text-[10px] text-gray-400 text-center mt-2">
-              💡 Chạm & giữ vào ảnh để lưu trực tiếp vào ứng dụng Ảnh trên iPad / iPhone
-            </p>
-          </div>
-
-          {/* Right: Actions & QR */}
-          <div className="w-full md:w-72 flex flex-col items-center gap-3 text-center">
-            
-            {/* Status notification banner */}
-            <div className="w-full p-2.5 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center gap-2 text-emerald-800 text-xs font-bold">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-              <span>Đã xuất ảnh thành công! Bạn có thể lưu hoặc in bên dưới.</span>
-            </div>
-
-            {/* QR Code Container */}
-            <div className="p-3 bg-pink-50/50 border border-pink-100 rounded-2xl flex flex-col items-center w-full">
-              <div className="bg-white p-2 rounded-xl shadow-xs border border-pink-100">
-                <QRCodeSVG value={shareUrl} size={100} level="M" />
+          {/* Top Header */}
+          <div className="px-5 py-3 bg-gradient-to-r from-pink-500 via-rose-500 to-purple-600 text-white flex items-center justify-between shadow-xs">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-lg bg-white/20 flex items-center justify-center text-amber-300">
+                <Sparkles className="w-3.5 h-3.5" />
               </div>
-              <span className="text-xs font-bold text-pink-700 mt-1.5">Quét QR bằng điện thoại</span>
-              <span className="text-[10px] text-gray-500">để tải ảnh gốc chất lượng cao về máy</span>
-
-              <button
-                type="button"
-                onClick={handleCopyLink}
-                className="mt-1 text-[11px] text-pink-600 hover:text-pink-700 font-medium flex items-center gap-1"
-              >
-                {copiedLink ? <Check className="w-3 h-3" /> : <Share2 className="w-3 h-3" />}
-                <span>{copiedLink ? 'Đã sao chép link!' : 'Sao chép liên kết'}</span>
-              </button>
-            </div>
-
-            {btStatusMsg && (
-              <div className="w-full p-2 bg-blue-50 border border-blue-200 text-blue-700 rounded-xl text-xs font-medium text-center animate-in fade-in">
-                {btStatusMsg}
+              <div>
+                <h2 className="text-sm sm:text-base font-bold font-cute leading-tight flex items-center gap-1.5">
+                  <span>Ảnh Đã Sẵn Sàng</span>
+                  <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded-md font-sans font-semibold tracking-wide">
+                    {currentPaper.widthPx}x{currentPaper.heightPx} px (300 DPI)
+                  </span>
+                </h2>
+                <p className="text-[11px] text-pink-100 hidden sm:block">
+                  Đã tinh chỉnh kích thước chuẩn cho Canon SELPHY CP1500 & các dòng máy in ảnh
+                </p>
               </div>
-            )}
-
-            {/* Main Action Buttons */}
-            <div className="w-full flex flex-col gap-2">
-              {/* Primary: Save / Download */}
-              <button
-                type="button"
-                onClick={handleDownload}
-                className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-600 hover:to-rose-600 text-white font-bold text-xs shadow-md transition-all hover:scale-102 active:scale-95 flex items-center justify-center gap-2"
-              >
-                {isSaved ? <Check className="w-4 h-4 text-amber-300" /> : <Download className="w-4 h-4" />}
-                <span>{isSaved ? '✓ Đã Lưu Vào Máy Thành Công!' : 'Lưu Ảnh Về Thiết Bị'}</span>
-              </button>
-
-              {/* Print Button */}
-              <button
-                type="button"
-                onClick={handlePrint}
-                disabled={isPrinting}
-                className="w-full py-2 px-3 rounded-xl bg-gray-900 hover:bg-black text-white font-bold text-xs shadow-xs transition-all hover:scale-102 disabled:opacity-50 flex items-center justify-center gap-1.5"
-              >
-                <Printer className="w-3.5 h-3.5 text-pink-400" />
-                <span>{isPrinting ? 'Đang gửi lệnh in...' : 'In Ảnh Ngay'}</span>
-              </button>
-
-              {/* Bluetooth Transfer Actions */}
-              <button
-                type="button"
-                onClick={handleSendBluetooth}
-                className="w-full py-2 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-xs transition-all hover:scale-102 flex items-center justify-center gap-1.5"
-              >
-                <Bluetooth className="w-3.5 h-3.5" />
-                <span>Bắn Sang ĐT (Bluetooth)</span>
-              </button>
-
-              {connectedDevices.some((d) => d.type === 'printer') && (
-                <button
-                  type="button"
-                  onClick={handlePrintBluetooth}
-                  className="w-full py-2 px-3 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs shadow-xs transition-all hover:scale-102 flex items-center justify-center gap-1.5"
-                >
-                  <Printer className="w-3.5 h-3.5" />
-                  <span>In Máy In Bluetooth (Dye-Sub)</span>
-                </button>
-              )}
             </div>
 
-          </div>
-        </div>
-
-        {/* Bottom Navigation Actions (Back to Home / New Shoot) */}
-        <div className="px-5 sm:px-6 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between gap-2">
-          {/* Back to Home Button */}
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex-1 sm:flex-none py-2.5 px-5 rounded-xl bg-white hover:bg-pink-50 text-gray-700 hover:text-pink-700 border border-gray-200 hover:border-pink-300 font-bold text-xs sm:text-sm shadow-2xs transition-all flex items-center justify-center gap-1.5 active:scale-95"
-          >
-            <Home className="w-4 h-4 text-pink-500" />
-            <span>🏠 Quay Lại Trang Chủ</span>
-          </button>
-
-          {/* New Shoot Button */}
-          {onStartNewShoot && (
             <button
               type="button"
-              onClick={onStartNewShoot}
-              className="flex-1 sm:flex-none py-2.5 px-5 rounded-xl bg-gradient-to-r from-purple-600 via-pink-600 to-rose-500 hover:from-purple-700 hover:to-rose-600 text-white font-bold text-xs sm:text-sm shadow-md transition-all hover:scale-105 active:scale-95 flex items-center justify-center gap-1.5"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onClose();
+              }}
+              onTouchEnd={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onClose();
+              }}
+              className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center text-white/90 hover:text-white bg-white/10 hover:bg-white/20 active:bg-white/30 transition-all cursor-pointer shadow-xs active:scale-95"
+              title="Đóng (Esc)"
+              aria-label="Đóng"
             >
-              <Camera className="w-4 h-4 text-amber-300" />
-              <span>Chụp Bộ Ảnh Mới</span>
+              <X className="w-5 h-5 stroke-[2.2]" />
             </button>
-          )}
-        </div>
+          </div>
 
+          {/* Content Body */}
+          <div className="p-4 sm:p-5 overflow-y-auto flex-1 flex flex-col md:flex-row gap-5 items-stretch justify-between">
+            
+            {/* Left: Strip Preview & Paper Controls */}
+            <div className="flex-1 flex flex-col items-center justify-between bg-gray-50/80 p-3 sm:p-4 rounded-2xl border border-gray-100">
+              
+              {/* Image Preview Container with Click-to-Zoom */}
+              <div
+                onClick={handleOpenLightbox}
+                className="group relative cursor-zoom-in max-h-[330px] flex items-center justify-center rounded-2xl overflow-hidden bg-white p-2.5 shadow-xs border-2 border-gray-200/90 hover:border-pink-300 hover:shadow-lg transition-all"
+                title="Nhấn để phóng to ảnh xem chi tiết nét 300 DPI"
+              >
+                {currentActiveUrl ? (
+                  <img
+                    src={currentActiveUrl}
+                    alt="Photobooth Strip Preview"
+                    className="max-h-[300px] w-auto object-contain rounded-lg transition-transform duration-200 group-hover:scale-[1.01]"
+                  />
+                ) : (
+                  <div className="w-40 h-72 bg-gray-100 rounded-lg flex items-center justify-center text-gray-400 text-xs font-medium">
+                    Đang dựng ảnh...
+                  </div>
+                )}
+
+                {/* Floating Expand Badge */}
+                <div className="absolute bottom-3 right-3 bg-black/80 hover:bg-pink-600 text-white text-xs font-bold px-3 py-1.5 rounded-xl backdrop-blur-md flex items-center gap-1.5 shadow-lg opacity-90 group-hover:opacity-100 transition-all cursor-pointer hover:scale-105 active:scale-95">
+                  <Maximize2 className="w-3.5 h-3.5 text-pink-300" />
+                  <span>Phóng to</span>
+                </div>
+              </div>
+
+              {/* Quick Zoom Bar Button */}
+              <button
+                type="button"
+                onClick={handleOpenLightbox}
+                className="mt-2.5 w-full py-2 px-3 rounded-xl bg-purple-50 hover:bg-purple-100 border border-purple-200 text-purple-700 font-bold text-xs flex items-center justify-center gap-1.5 transition-all active:scale-98 cursor-pointer shadow-2xs hover:shadow-xs"
+                title="Nhấn để mở toàn màn hình xem ảnh chất lượng cao 300 DPI"
+              >
+                <Maximize2 className="w-3.5 h-3.5 text-purple-600" />
+                <span>🔍 Mở Toàn Màn Hình (Zoom & Kéo Xem Chi Tiết)</span>
+              </button>
+
+              {/* Layout Switch Tabs */}
+              <div className="w-full flex items-center justify-between gap-2 mt-3">
+                <div className="flex items-center gap-1 bg-gray-200/70 p-1 rounded-xl text-xs font-semibold">
+                  <button
+                    type="button"
+                    onClick={() => setPrintLayout('double')}
+                    className={`px-3 py-1 rounded-lg transition-all flex items-center gap-1 text-xs ${
+                      printLayout === 'double'
+                        ? 'bg-white text-pink-600 shadow-2xs font-bold'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                  >
+                    <Layers className="w-3 h-3" />
+                    <span>Dải Đôi (Cắt 2 dải)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPrintLayout('single')}
+                    className={`px-3 py-1 rounded-lg transition-all flex items-center gap-1 text-xs ${
+                      printLayout === 'single'
+                        ? 'bg-white text-pink-600 shadow-2xs font-bold'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                  >
+                    <Layers className="w-3 h-3" />
+                    <span>Dải Đơn (1 dải)</span>
+                  </button>
+                </div>
+
+                {/* Safe Bleed Protection Toggle */}
+                <button
+                  type="button"
+                  onClick={() => setSafeBleed(!safeBleed)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
+                    safeBleed
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-300 shadow-2xs font-bold'
+                      : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                  }`}
+                  title="Chống máy in phóng to tràn viền xén mất chữ và logo"
+                >
+                  <ShieldCheck className={`w-3.5 h-3.5 ${safeBleed ? 'text-emerald-600' : 'text-gray-400'}`} />
+                  <span>{safeBleed ? '🛡️ Lề An Toàn: BẬT' : '🛡️ Lề An Toàn: TẮT'}</span>
+                </button>
+              </div>
+
+              {/* Paper Selector Section */}
+              <div className="w-full mt-3 bg-white p-2.5 rounded-xl border border-gray-200/80 shadow-2xs">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs font-bold text-gray-700 flex items-center gap-1.5">
+                    <SlidersHorizontal className="w-3.5 h-3.5 text-pink-500" />
+                    <span>Cỡ Ảnh Giấy In:</span>
+                  </span>
+                  <span className="text-[11px] text-pink-600 font-bold bg-pink-50 px-2 py-0.5 rounded-md">
+                    {currentPaper.widthMm} x {currentPaper.heightMm} mm ({currentPaper.widthPx}x{currentPaper.heightPx} px)
+                  </span>
+                </div>
+
+                {/* Paper Size Option Pills */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                  {Object.values(PAPER_SIZES).map((paper) => {
+                    const isSelected = selectedPaperSize === paper.id;
+                    const isCanonPrimary = paper.id === 'canon-cp1500-postcard';
+                    return (
+                      <button
+                        key={paper.id}
+                        type="button"
+                        onClick={() => handlePaperSizeChange(paper.id)}
+                        className={`text-left p-1.5 rounded-lg border text-xs transition-all relative ${
+                          isSelected
+                            ? 'border-pink-500 bg-pink-50/80 text-pink-900 shadow-2xs font-bold'
+                            : 'border-gray-200 hover:border-pink-300 bg-white text-gray-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="truncate font-semibold text-[11px]">{paper.shortName}</span>
+                          {isCanonPrimary && (
+                            <span className="text-[9px] bg-red-500 text-white font-bold px-1 rounded-sm shrink-0 ml-1">
+                              CP1500
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-gray-400 truncate mt-0.5">
+                          {paper.widthPx}×{paper.heightPx} px • {paper.widthMm}×{paper.heightMm}mm
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Notice text for Canon CP1500 and Mac AirPrint */}
+                <div className="mt-2 space-y-1.5">
+                  <div className="p-1.5 bg-amber-50/70 border border-amber-200/60 rounded-lg text-[10px] text-amber-800 flex items-start gap-1">
+                    <Info className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <strong>Khổ chuẩn Canon CP1500:</strong> Khay bưu thiếp KP-108IN/RP-108 có kích thước vật lý chính xác là <strong>100 x 148 mm (1181 x 1748 px @ 300 DPI)</strong>. Bật "Lề an toàn" giúp ảnh in tràn viền không bao giờ bị xén mất chữ footer hay logo!
+                    </div>
+                  </div>
+
+                  <div className="p-1.5 bg-rose-50 border border-rose-200 rounded-lg text-[10px] text-rose-800 flex items-start gap-1">
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
+                    <div>
+                      <strong>Lưu ý in trên macOS:</strong> Trong hộp thoại in của Mac, mục <strong>"Khổ giấy Đích" (Destination Paper Size)</strong> cần chọn đúng <strong>Postcard (100 x 148 mm)</strong> hoặc <strong>Bưu thiếp</strong>. Không để mặc định A4 (210 x 297 mm) vì sẽ bị in lệch chỉ ra góc dưới bên trái!
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+            {/* Right: Actions, Download & QR */}
+            <div className="w-full md:w-64 flex flex-col items-center gap-2.5 text-center shrink-0 justify-between">
+              
+              {/* Success notice */}
+              <div className="w-full py-1.5 px-3 bg-emerald-50 border border-emerald-200/80 rounded-xl flex items-center gap-1.5 text-emerald-800 text-xs font-medium">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <span className="truncate">Sẵn sàng in chuẩn 300 DPI!</span>
+              </div>
+
+              {/* QR Code Container */}
+              <div className="p-2.5 bg-pink-50/40 border border-pink-100 rounded-2xl flex flex-col items-center w-full">
+                <div className="bg-white p-1.5 rounded-xl shadow-2xs border border-pink-100">
+                  <QRCodeSVG value={shareUrl} size={90} level="M" />
+                </div>
+                <span className="text-xs font-bold text-pink-700 mt-1.5">Quét QR tải ảnh</span>
+                <span className="text-[10px] text-gray-400">bằng camera điện thoại</span>
+
+                <button
+                  type="button"
+                  onClick={handleCopyLink}
+                  className="mt-1 text-[11px] text-pink-600 hover:text-pink-700 font-medium flex items-center gap-1 cursor-pointer"
+                >
+                  {copiedLink ? <Check className="w-3 h-3 text-emerald-600" /> : <Share2 className="w-3 h-3" />}
+                  <span>{copiedLink ? 'Đã sao chép link' : 'Sao chép link'}</span>
+                </button>
+              </div>
+
+              {btStatusMsg && (
+                <div className="w-full py-1.5 px-2 bg-blue-50 border border-blue-200 text-blue-700 rounded-lg text-xs font-medium text-center animate-in fade-in">
+                  {btStatusMsg}
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="w-full flex flex-col gap-2">
+                {/* Save / Download */}
+                <button
+                  type="button"
+                  onClick={handleDownload}
+                  className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-600 hover:to-rose-600 text-white font-bold text-xs shadow-xs transition-all active:scale-98 flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  {isSaved ? <Check className="w-3.5 h-3.5 text-amber-300" /> : <Download className="w-3.5 h-3.5" />}
+                  <span>{isSaved ? '✓ Đã Lưu Vào Máy' : 'Lưu Ảnh Về Máy (300 DPI)'}</span>
+                </button>
+
+                {/* In Qua App SELPHY (SPL) Button */}
+                <button
+                  type="button"
+                  onClick={handlePrintSPL}
+                  disabled={isPrinting}
+                  className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-red-600 via-rose-600 to-pink-600 hover:from-red-700 hover:to-rose-700 text-white font-bold text-xs shadow-md transition-all active:scale-98 disabled:opacity-50 flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Printer className="w-4 h-4 text-amber-200" />
+                  <span>In Canon SELPHY ({currentPaper.shortName})</span>
+                </button>
+
+                {/* Print Button (AirPrint / System) */}
+                <div>
+                  <button
+                    type="button"
+                    onClick={handlePrint}
+                    disabled={isPrinting}
+                    className="w-full py-2 px-3 rounded-xl bg-gray-900 hover:bg-black text-white font-bold text-xs shadow-2xs transition-all active:scale-98 disabled:opacity-50 flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Printer className="w-3.5 h-3.5 text-pink-400" />
+                    <span>{isPrinting ? 'Đang gửi lệnh in...' : 'In AirPrint / Trực Tiếp'}</span>
+                  </button>
+                  <p className="text-[10px] text-gray-500 mt-1 leading-tight text-center">
+                    💡 Trên Mac: Hãy chọn <strong>Khổ giấy Đích</strong> là <strong>Postcard (100x148mm)</strong>
+                  </p>
+                </div>
+
+                {/* Bluetooth Actions */}
+                <button
+                  type="button"
+                  onClick={handleSendBluetooth}
+                  className="w-full py-1.5 px-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-[11px] shadow-2xs transition-all active:scale-98 flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Bluetooth className="w-3 h-3" />
+                  <span>Bắn Sang ĐT (Bluetooth)</span>
+                </button>
+
+                {connectedDevices.some((d) => d.type === 'printer') && (
+                  <button
+                    type="button"
+                    onClick={handlePrintBluetooth}
+                    className="w-full py-1.5 px-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-semibold text-[11px] shadow-2xs transition-all active:scale-98 flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Printer className="w-3 h-3" />
+                    <span>In Máy In Bluetooth</span>
+                  </button>
+                )}
+              </div>
+
+            </div>
+          </div>
+
+          {/* Bottom Navigation */}
+          <div className="px-5 py-2.5 bg-gray-50 border-t border-gray-100 flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="py-2 px-4 rounded-xl bg-white hover:bg-pink-50 text-gray-700 hover:text-pink-700 border border-gray-200 hover:border-pink-300 font-bold text-xs shadow-2xs transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              <Home className="w-3.5 h-3.5 text-pink-500" />
+              <span>Về Trang Chủ</span>
+            </button>
+
+            {onStartNewShoot && (
+              <button
+                type="button"
+                onClick={onStartNewShoot}
+                className="py-2 px-4 rounded-xl bg-gradient-to-r from-purple-600 via-pink-600 to-rose-500 hover:from-purple-700 hover:to-rose-600 text-white font-bold text-xs shadow-xs transition-all hover:scale-102 active:scale-98 flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Camera className="w-3.5 h-3.5 text-amber-300" />
+                <span>Chụp Bộ Mới</span>
+              </button>
+            )}
+          </div>
+
+        </div>
       </div>
-    </div>
+
+      {/* FULLSCREEN LIGHTBOX / ZOOM VIEWER */}
+      <ImageLightboxModal
+        isOpen={isLightboxOpen}
+        onClose={() => setIsLightboxOpen(false)}
+        imageUrl={currentActiveUrl}
+        title={`Dải Ảnh ${currentPaper.name}`}
+        subtitle={`${currentPaper.widthPx}x${currentPaper.heightPx} px @ 300 DPI`}
+        isSaved={isSaved}
+        isPrinting={isPrinting}
+        onDownload={handleDownload}
+        onPrint={handlePrint}
+      />
+    </>
   );
 };

@@ -23,11 +23,19 @@ import {
   Trash2,
   CheckCircle2,
   Video,
+  Filter,
+  HelpCircle,
+  Search,
+  Info,
+  ChevronDown,
+  ChevronUp,
+  Zap,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import {
   bluetoothService,
   BluetoothDevice,
+  BleScanFilterMode,
 } from '../services/bluetoothService';
 import { realP2PService, ConnectedPhoneClient } from '../services/realP2PService';
 
@@ -55,6 +63,11 @@ export const BluetoothModal: React.FC<BluetoothModalProps> = ({
   const [scanErrorMessage, setScanErrorMessage] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
   const [customHostInput, setCustomHostInput] = useState(realP2PService.getCustomHost());
+
+  // BLE Scan Filter settings
+  const [scanFilterMode, setScanFilterMode] = useState<BleScanFilterMode>('named_only');
+  const [customPrefixInput, setCustomPrefixInput] = useState('');
+  const [showWhyUnknownTip, setShowWhyUnknownTip] = useState(false);
 
   // Real HID Bluetooth Remote live indicator
   const [lastHidKey, setLastHidKey] = useState<string | null>(null);
@@ -96,10 +109,24 @@ export const BluetoothModal: React.FC<BluetoothModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleRealWebBluetooth = async () => {
+  const handleRealWebBluetooth = async (modeOverride?: BleScanFilterMode) => {
     setScanErrorMessage(null);
-    setActionMessage('Đang mở hộp thoại quét Bluetooth của hệ điều hành...');
-    const res = await bluetoothService.scanRealWebBluetooth();
+    const mode = modeOverride || scanFilterMode;
+
+    let modeLabel = 'Lọc chỉ thiết bị có tên (0% Unknown rác)';
+    if (mode === 'cameras') modeLabel = 'Máy ảnh (Canon/Sony/Nikon...)';
+    if (mode === 'printers') modeLabel = 'Máy in (SELPHY/POS/Thermal...)';
+    if (mode === 'remotes') modeLabel = 'Nút bấm Selfie / Remote';
+    if (mode === 'custom') modeLabel = `Tên bắt đầu bằng "${customPrefixInput || '...'}"`;
+    if (mode === 'all') modeLabel = 'Tất cả thiết bị (Bao gồm không tên)';
+
+    setActionMessage(`Đang mở cửa sổ quét Bluetooth: ${modeLabel}...`);
+
+    const res = await bluetoothService.scanRealWebBluetooth({
+      mode,
+      customPrefix: customPrefixInput,
+    });
+
     if (!res.success) {
       if (res.error) setScanErrorMessage(res.error);
     } else {
@@ -261,8 +288,20 @@ export const BluetoothModal: React.FC<BluetoothModalProps> = ({
           </div>
 
           <button
-            onClick={onClose}
-            className="p-1.5 rounded-full text-gray-400 hover:text-white hover:bg-gray-800 transition-colors"
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onClose();
+            }}
+            onTouchEnd={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onClose();
+            }}
+            className="w-8 h-8 rounded-full flex items-center justify-center text-gray-400 hover:text-white hover:bg-gray-800 active:bg-gray-700 transition-colors cursor-pointer active:scale-95"
+            title="Đóng"
+            aria-label="Đóng"
           >
             <X className="w-5 h-5" />
           </button>
@@ -541,28 +580,236 @@ export const BluetoothModal: React.FC<BluetoothModalProps> = ({
           {/* TAB 3: BLUETOOTH BLE HARDWARE GATT SCANNER */}
           {activeTab === 'ble_scanner' && (
             <div className="flex flex-col gap-4">
-              {/* Primary Action Button for Web Bluetooth Scan */}
-              <div className="bg-gradient-to-r from-blue-900/40 via-purple-900/40 to-blue-900/40 border border-blue-500/40 p-5 rounded-3xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl">
-                <div className="flex items-center gap-3.5">
-                  <div className="w-12 h-12 rounded-2xl bg-blue-500/20 border border-blue-500/40 text-blue-400 flex items-center justify-center shrink-0">
-                    <Radio className="w-6 h-6 animate-pulse" />
+              {/* Scan Control Header Card */}
+              <div className="bg-gradient-to-r from-blue-950/60 via-gray-900 to-purple-950/60 border border-blue-500/40 p-5 rounded-3xl flex flex-col gap-4 shadow-xl">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-11 h-11 rounded-2xl bg-blue-500/20 border border-blue-500/40 text-blue-400 flex items-center justify-center shrink-0">
+                      <Radio className="w-5 h-5 animate-pulse" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-sm sm:text-base text-white flex items-center gap-2">
+                        <span>Quét Thiết Bị Bluetooth BLE Thật</span>
+                        <span className="text-[11px] bg-blue-500/20 text-blue-300 font-semibold px-2 py-0.5 rounded-full border border-blue-500/30">
+                          Web Bluetooth API
+                        </span>
+                      </h3>
+                      <p className="text-xs text-gray-300 mt-0.5">
+                        Chọn chế độ lọc thông minh để loại bỏ thiết bị vô danh ("Unknown Device")
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="font-bold text-sm sm:text-base text-white">Quét Thiết Bị BLE Thật (Web Bluetooth API)</h3>
-                    <p className="text-xs text-gray-300 mt-0.5">
-                      Mở bảng quét Bluetooth của hệ điều hành (macOS / Windows / Android / iOS Native)
-                    </p>
-                  </div>
+
+                  <button
+                    onClick={() => setShowWhyUnknownTip((prev) => !prev)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-amber-300 hover:text-amber-200 text-xs font-semibold border border-amber-500/30 transition-all self-start sm:self-auto"
+                  >
+                    <HelpCircle className="w-4 h-4 text-amber-400" />
+                    <span>{showWhyUnknownTip ? 'Ẩn Hướng Dẫn' : 'Vì sao ra 1 đống Unknown?'}</span>
+                    {showWhyUnknownTip ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                  </button>
                 </div>
 
-                <button
-                  onClick={handleRealWebBluetooth}
-                  className="w-full sm:w-auto px-6 py-3 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white font-extrabold text-xs sm:text-sm shadow-lg shadow-blue-900/50 transition-all hover:scale-105 active:scale-95 flex items-center justify-center gap-2 shrink-0"
-                >
-                  <Bluetooth className="w-4 h-4" />
-                  <span>Quét & Ghép Nối Thiết Bị Thật</span>
-                </button>
+                {/* Filter Mode Selector Pills */}
+                <div className="flex flex-col gap-2 pt-2 border-t border-gray-800">
+                  <span className="text-[11px] text-gray-400 font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    <Filter className="w-3.5 h-3.5 text-blue-400" />
+                    <span>Chế độ lọc quét Bluetooth:</span>
+                  </span>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    <button
+                      onClick={() => setScanFilterMode('named_only')}
+                      className={`p-2.5 rounded-xl border text-xs font-semibold text-left flex items-center gap-2 transition-all ${
+                        scanFilterMode === 'named_only'
+                          ? 'bg-blue-600/30 border-blue-500 text-blue-200 shadow-md shadow-blue-500/20'
+                          : 'bg-gray-800/60 border-gray-700/80 text-gray-400 hover:text-gray-200 hover:bg-gray-800'
+                      }`}
+                    >
+                      <Zap className="w-4 h-4 text-amber-400 shrink-0" />
+                      <div className="min-w-0">
+                        <div className="font-bold text-white text-[11px] truncate">🎯 Chỉ có tên (Khuyên Dùng)</div>
+                        <div className="text-[10px] text-gray-400 truncate">Lọc sạch 100% Unknown</div>
+                      </div>
+                    </button>
+
+                    <button
+                      onClick={() => setScanFilterMode('cameras')}
+                      className={`p-2.5 rounded-xl border text-xs font-semibold text-left flex items-center gap-2 transition-all ${
+                        scanFilterMode === 'cameras'
+                          ? 'bg-blue-600/30 border-blue-500 text-blue-200 shadow-md shadow-blue-500/20'
+                          : 'bg-gray-800/60 border-gray-700/80 text-gray-400 hover:text-gray-200 hover:bg-gray-800'
+                      }`}
+                    >
+                      <Camera className="w-4 h-4 text-pink-400 shrink-0" />
+                      <div className="min-w-0">
+                        <div className="font-bold text-white text-[11px] truncate">📷 Máy Ảnh</div>
+                        <div className="text-[10px] text-gray-400 truncate">Canon, Sony, Nikon, Fuji...</div>
+                      </div>
+                    </button>
+
+                    <button
+                      onClick={() => setScanFilterMode('printers')}
+                      className={`p-2.5 rounded-xl border text-xs font-semibold text-left flex items-center gap-2 transition-all ${
+                        scanFilterMode === 'printers'
+                          ? 'bg-blue-600/30 border-blue-500 text-blue-200 shadow-md shadow-blue-500/20'
+                          : 'bg-gray-800/60 border-gray-700/80 text-gray-400 hover:text-gray-200 hover:bg-gray-800'
+                      }`}
+                    >
+                      <Printer className="w-4 h-4 text-purple-400 shrink-0" />
+                      <div className="min-w-0">
+                        <div className="font-bold text-white text-[11px] truncate">🖨️ Máy In</div>
+                        <div className="text-[10px] text-gray-400 truncate">SELPHY, POS, Thermal...</div>
+                      </div>
+                    </button>
+
+                    <button
+                      onClick={() => setScanFilterMode('remotes')}
+                      className={`p-2.5 rounded-xl border text-xs font-semibold text-left flex items-center gap-2 transition-all ${
+                        scanFilterMode === 'remotes'
+                          ? 'bg-blue-600/30 border-blue-500 text-blue-200 shadow-md shadow-blue-500/20'
+                          : 'bg-gray-800/60 border-gray-700/80 text-gray-400 hover:text-gray-200 hover:bg-gray-800'
+                      }`}
+                    >
+                      <Aperture className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <div className="min-w-0">
+                        <div className="font-bold text-white text-[11px] truncate">🔘 Nút Chụp / Remote</div>
+                        <div className="text-[10px] text-gray-400 truncate">Shutter, Selfie, Button...</div>
+                      </div>
+                    </button>
+
+                    <button
+                      onClick={() => setScanFilterMode('custom')}
+                      className={`p-2.5 rounded-xl border text-xs font-semibold text-left flex items-center gap-2 transition-all ${
+                        scanFilterMode === 'custom'
+                          ? 'bg-blue-600/30 border-blue-500 text-blue-200 shadow-md shadow-blue-500/20'
+                          : 'bg-gray-800/60 border-gray-700/80 text-gray-400 hover:text-gray-200 hover:bg-gray-800'
+                      }`}
+                    >
+                      <Search className="w-4 h-4 text-blue-400 shrink-0" />
+                      <div className="min-w-0">
+                        <div className="font-bold text-white text-[11px] truncate">🔍 Tên Tùy Chỉnh</div>
+                        <div className="text-[10px] text-gray-400 truncate">Nhập từ khóa tiền tố</div>
+                      </div>
+                    </button>
+
+                    <button
+                      onClick={() => setScanFilterMode('all')}
+                      className={`p-2.5 rounded-xl border text-xs font-semibold text-left flex items-center gap-2 transition-all ${
+                        scanFilterMode === 'all'
+                          ? 'bg-blue-600/30 border-blue-500 text-blue-200 shadow-md shadow-blue-500/20'
+                          : 'bg-gray-800/60 border-gray-700/80 text-gray-400 hover:text-gray-200 hover:bg-gray-800'
+                      }`}
+                    >
+                      <Radio className="w-4 h-4 text-gray-400 shrink-0" />
+                      <div className="min-w-0">
+                        <div className="font-bold text-white text-[11px] truncate">🌐 Tất Cả Thiết Bị</div>
+                        <div className="text-[10px] text-gray-400 truncate">Bao gồm không tên (Raw)</div>
+                      </div>
+                    </button>
+                  </div>
+
+                  {/* Custom Prefix Input Box */}
+                  {scanFilterMode === 'custom' && (
+                    <div className="flex items-center gap-2 mt-1 bg-gray-950 p-2.5 rounded-xl border border-gray-800 animate-in fade-in">
+                      <Search className="w-4 h-4 text-blue-400 shrink-0 ml-1" />
+                      <input
+                        type="text"
+                        value={customPrefixInput}
+                        onChange={(e) => setCustomPrefixInput(e.target.value)}
+                        placeholder="Nhập chữ cái bắt đầu của thiết bị (ví dụ: Canon, SELPHY, AB, BT...)"
+                        className="flex-1 bg-transparent border-none text-xs text-white placeholder-gray-500 outline-none"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {/* Primary Trigger Scan CTA */}
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2 border-t border-gray-800">
+                  <span className="text-xs text-gray-300">
+                    Chế độ đang chọn:{' '}
+                    <strong className="text-blue-300">
+                      {scanFilterMode === 'named_only' && '🎯 Chỉ thiết bị có tên (Không còn Unknown rác)'}
+                      {scanFilterMode === 'cameras' && '📷 Máy Ảnh (Canon / Sony / Nikon / Fuji)'}
+                      {scanFilterMode === 'printers' && '🖨️ Máy In (SELPHY / POS / Thermal)'}
+                      {scanFilterMode === 'remotes' && '🔘 Nút Chụp BLE / Remote'}
+                      {scanFilterMode === 'custom' && `🔍 Thiết bị bắt đầu bằng "${customPrefixInput || '...'}"`}
+                      {scanFilterMode === 'all' && '🌐 Tất cả (Bao gồm sóng không tên)'}
+                    </strong>
+                  </span>
+
+                  <button
+                    onClick={() => handleRealWebBluetooth()}
+                    className="w-full sm:w-auto px-6 py-3 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white font-extrabold text-xs sm:text-sm shadow-lg shadow-blue-900/50 transition-all hover:scale-105 active:scale-95 flex items-center justify-center gap-2 shrink-0"
+                  >
+                    <Bluetooth className="w-4 h-4" />
+                    <span>Bắt Đầu Quét & Ghép Nối Thiết Bị</span>
+                  </button>
+                </div>
               </div>
+
+              {/* Troubleshooting & Guidance Accordion */}
+              {showWhyUnknownTip && (
+                <div className="p-5 rounded-3xl bg-amber-950/20 border border-amber-500/30 flex flex-col gap-3 text-xs text-amber-200/90 animate-in fade-in">
+                  <div className="flex items-center gap-2 font-bold text-amber-300 text-sm">
+                    <Info className="w-4 h-4 text-amber-400" />
+                    <span>Giải Đáp: Vì Sao Khi Quét Bluetooth Lại Ra 1 Đống "Unknown Device"?</span>
+                  </div>
+
+                  <div className="space-y-2 text-[12px] text-gray-300 leading-relaxed">
+                    <p>
+                      🔴 <strong>Nguyên nhân:</strong> Trong phòng có rất nhiều thiết bị phát sóng Bluetooth BLE ngầm liên tục (như Smart TV, Apple AirTags, đồng hồ thông minh, vòng đeo tay thể thao, bóng đèn thông minh, thiết bị nhà thông minh...). Các thiết bị này phát các gói tin quảng bá (BLE Advertisements) không chứa chuỗi tên gọi. Trình duyệt khi quét toàn bộ sẽ gom tất cả lại và hiển thị là <em>"Unknown or unsupported device"</em>.
+                    </p>
+
+                    <p>
+                      🟢 <strong>Cách giải quyết:</strong>
+                    </p>
+                    <ul className="list-disc list-inside space-y-1 pl-2 text-gray-300">
+                      <li>
+                        <strong>Khuyên Dùng:</strong> Hãy chọn chế độ <strong>"🎯 Chỉ có tên (Khuyên Dùng)"</strong> ở trên. Hệ thống sẽ lọc bỏ 100% các thiết bị vô danh và chỉ hiển thị thiết bị có tên thật rõ ràng!
+                      </li>
+                      <li>
+                        <strong>Máy ảnh / Máy in chưa hiện tên?</strong> Hãy đảm bảo bạn đã bấm giữ nút Bluetooth 3-5 giây trên thiết bị cho đến khi <strong>đèn LED nhấp nháy liên tục (Pairing Mode)</strong> để thiết bị phát tên ra môi trường.
+                      </li>
+                    </ul>
+                  </div>
+
+                  {/* Quick Shortcut Buttons to Tab 1 and Tab 2 */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1 pt-2 border-t border-amber-500/20">
+                    <button
+                      onClick={() => setActiveTab('hid_remote')}
+                      className="p-3 rounded-xl bg-gray-900/80 hover:bg-emerald-950/40 border border-emerald-500/30 text-left flex items-center justify-between group transition-all"
+                    >
+                      <div>
+                        <div className="font-bold text-emerald-400 text-xs flex items-center gap-1.5">
+                          <Aperture className="w-3.5 h-3.5" />
+                          <span>Bạn dùng Nút Bấm Chụp Selfie (AB Shutter 3)?</span>
+                        </div>
+                        <div className="text-[11px] text-gray-400 mt-0.5">
+                          Ghép đôi ở Cài đặt Bluetooth máy tính & dùng trực tiếp tại đây
+                        </div>
+                      </div>
+                      <span className="text-emerald-400 font-bold text-xs group-hover:translate-x-1 transition-transform">→</span>
+                    </button>
+
+                    <button
+                      onClick={() => setActiveTab('qr_phone')}
+                      className="p-3 rounded-xl bg-gray-900/80 hover:bg-pink-950/40 border border-pink-500/30 text-left flex items-center justify-between group transition-all"
+                    >
+                      <div>
+                        <div className="font-bold text-pink-400 text-xs flex items-center gap-1.5">
+                          <Smartphone className="w-3.5 h-3.5" />
+                          <span>Bạn muốn kết nối Điện thoại (iPhone / Android)?</span>
+                        </div>
+                        <div className="text-[11px] text-gray-400 mt-0.5">
+                          Quét mã QR để biến điện thoại thành Camera Live 60FPS & Bắn ảnh
+                        </div>
+                      </div>
+                      <span className="text-pink-400 font-bold text-xs group-hover:translate-x-1 transition-transform">→</span>
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Devices Cards */}
               {devices.length === 0 ? (
@@ -573,7 +820,7 @@ export const BluetoothModal: React.FC<BluetoothModalProps> = ({
                   <div>
                     <h4 className="font-bold text-sm text-white">Chưa có thiết bị Bluetooth BLE nào được ghép nối</h4>
                     <p className="text-xs text-gray-400 mt-1 max-w-md">
-                      Bấm nút <strong>"Quét & Ghép Nối Thiết Bị Thật"</strong> ở trên để tìm các thiết bị Bluetooth xung quanh bạn.
+                      Bấm nút <strong>"Bắt Đầu Quét & Ghép Nối Thiết Bị"</strong> ở trên để tìm các thiết bị Bluetooth xung quanh bạn.
                     </p>
                   </div>
 
@@ -639,7 +886,7 @@ export const BluetoothModal: React.FC<BluetoothModalProps> = ({
                                 )}
                               </div>
                               <div className="flex items-center gap-2 text-xs text-gray-400 mt-0.5">
-                                <span>{dev.modelName}</span>
+                                <span>{dev.brand} - {dev.modelName}</span>
                                 <span>•</span>
                                 <span className="font-mono text-[11px] text-gray-500">{dev.macAddress}</span>
                               </div>
