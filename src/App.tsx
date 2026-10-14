@@ -786,50 +786,44 @@ function PhotoboothApp() {
               </div>
             </div>
 
-            {/* 2. 📸 PRIMARY PHOTO OPERATIONS TOOLBAR - DUAL MAIN ACTIONS: CHỤP HOẶC TẢI ẢNH */}
+            {/* 2. 📸 PRIMARY PHOTO OPERATIONS TOOLBAR - FULL-WIDTH CHỤP ẢNH & TIỆN ÍCH */}
             <div className="w-full flex flex-col gap-1.5 mb-1 shrink-0">
-              {/* Row 1: Dual Primary Actions - Shoot with Camera OR Upload from Device */}
-              <div className="grid grid-cols-2 gap-1.5">
-                {/* Option 1: Live Camera Shutter */}
-                <button
-                  type="button"
-                  onClick={() => setIsCameraOpen(true)}
-                  className="py-2 px-3 rounded-xl bg-gradient-to-r from-pink-500 via-rose-500 to-pink-600 hover:from-pink-600 hover:to-rose-600 text-white font-extrabold text-xs sm:text-sm shadow-md transition-all flex items-center justify-center gap-1.5 active:scale-95 hover:scale-101 cursor-pointer"
-                  title="Bật camera chụp ảnh trực tiếp"
-                >
-                  <Camera className="w-4 h-4 text-white animate-pulse shrink-0" />
-                  <span className="truncate">Chụp Camera</span>
-                  <span className="text-[10px] bg-white/25 px-1.5 py-0.2 rounded-full font-bold shrink-0">
-                    {selectedFrame.slotCount}
-                  </span>
-                </button>
+              {/* Primary Action Button: Full-width Big Shutter Button */}
+              <button
+                type="button"
+                onClick={() => setIsCameraOpen(true)}
+                className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-pink-500 via-rose-500 to-pink-600 hover:from-pink-600 hover:to-rose-600 text-white font-extrabold text-sm shadow-md transition-all flex items-center justify-center gap-2 active:scale-95 hover:scale-101 cursor-pointer"
+                title="Bật camera chụp ảnh trực tiếp"
+              >
+                <Camera className="w-5 h-5 text-white animate-pulse shrink-0" />
+                <span>Bắt Đầu Chụp Ảnh</span>
+                <span className="text-xs bg-white/25 px-2 py-0.5 rounded-full font-bold shrink-0">
+                  {selectedFrame.slotCount} Kiểu
+                </span>
+              </button>
 
-                {/* Option 2: Upload Photos from Device */}
-                <button
-                  type="button"
-                  onClick={() => setIsUploadModalOpen(true)}
-                  className="py-2 px-3 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-extrabold text-xs sm:text-sm shadow-md transition-all flex items-center justify-center gap-1.5 active:scale-95 hover:scale-101 cursor-pointer"
-                  title="Tải ảnh có sẵn từ máy tính hoặc điện thoại thay vì chụp"
-                >
-                  <Upload className="w-4 h-4 text-white shrink-0" />
-                  <span className="truncate">Tải Ảnh Từ Máy</span>
-                  <span className="text-[10px] bg-white/25 px-1.5 py-0.2 rounded-full font-bold shrink-0">
-                    {selectedFrame.slotCount}
-                  </span>
-                </button>
-              </div>
-
-              {/* Row 2: 3 Utility Action Buttons */}
-              <div className="grid grid-cols-3 gap-1.5">
+              {/* Utility Row: In & Xuất, Tải Ảnh, Phóng To, Đổi Mẫu */}
+              <div className="grid grid-cols-4 gap-1.5">
                 {/* Print / Export */}
                 <button
                   type="button"
                   onClick={handleOpenExport}
-                  className="py-1 px-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-2xs transition-all flex items-center justify-center gap-1 active:scale-95 hover:scale-102 cursor-pointer"
+                  className="py-1 px-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-2xs transition-all flex items-center justify-center gap-1 active:scale-95 hover:scale-102 cursor-pointer"
                   title="In ảnh máy Canon CP1500 & Tải về"
                 >
                   <Download className="w-3.5 h-3.5 shrink-0" />
                   <span className="truncate">In & Xuất</span>
+                </button>
+
+                {/* Upload Photos from Device */}
+                <button
+                  type="button"
+                  onClick={() => setIsUploadModalOpen(true)}
+                  className="py-1 px-1.5 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 font-bold text-xs shadow-2xs transition-all flex items-center justify-center gap-1 active:scale-95 hover:scale-102 cursor-pointer"
+                  title="Tải ảnh có sẵn từ máy tính hoặc điện thoại thay vì chụp"
+                >
+                  <Upload className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                  <span className="truncate">Tải Ảnh</span>
                 </button>
 
                 {/* Zoom Preview Button */}
@@ -837,10 +831,10 @@ function PhotoboothApp() {
                   type="button"
                   onClick={handleOpenMainLightbox}
                   disabled={isLightboxLoading}
-                  className="py-1 px-2 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 font-bold text-xs shadow-2xs transition-all flex items-center justify-center gap-1 active:scale-95 hover:scale-102 cursor-pointer disabled:opacity-50"
+                  className="py-1 px-1.5 rounded-xl bg-pink-50 hover:bg-pink-100 text-pink-700 border border-pink-200 font-bold text-xs shadow-2xs transition-all flex items-center justify-center gap-1 active:scale-95 hover:scale-102 cursor-pointer disabled:opacity-50"
                   title="Phóng to toàn màn hình xem ảnh 300 DPI"
                 >
-                  <Maximize2 className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                  <Maximize2 className="w-3.5 h-3.5 text-pink-600 shrink-0" />
                   <span className="truncate">{isLightboxLoading ? 'Đang mở...' : 'Phóng To'}</span>
                 </button>
 
@@ -849,7 +843,7 @@ function PhotoboothApp() {
                   type="button"
                   onClick={handleRandomizeMockPhotos}
                   title="Đổi sang bộ ảnh mẫu khác để xem trước"
-                  className="py-1 px-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold text-xs transition-all flex items-center justify-center gap-1 active:scale-95 cursor-pointer shadow-2xs"
+                  className="py-1 px-1.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold text-xs transition-all flex items-center justify-center gap-1 active:scale-95 cursor-pointer shadow-2xs"
                 >
                   <RefreshCw className="w-3.5 h-3.5 shrink-0" />
                   <span className="truncate">Đổi Mẫu</span>

@@ -1099,20 +1099,20 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
           </div>
         )}
 
-        {/* 3. TOP-RIGHT COUNTDOWN OVERLAY */}
+        {/* 3. TOP-RIGHT COUNTDOWN OVERLAY - LARGE PROMINENT NUMBERS */}
         {countdown !== null && (
-          <div className="absolute top-16 right-4 sm:top-18 sm:right-6 z-40 flex flex-col items-end gap-2 pointer-events-none animate-in fade-in slide-in-from-top-2 duration-150">
-            <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full bg-black/80 backdrop-blur-md border-4 border-pink-500 flex items-center justify-center shadow-[0_0_35px_rgba(244,63,94,0.8)] animate-in zoom-in-75 duration-150">
+          <div className="absolute top-16 right-4 sm:top-20 sm:right-8 z-40 flex flex-col items-end gap-3 pointer-events-none animate-in fade-in slide-in-from-top-2 duration-150">
+            <div className="w-28 h-28 sm:w-36 sm:h-36 md:w-44 md:h-44 rounded-full bg-black/85 backdrop-blur-xl border-4 sm:border-[6px] border-pink-500 flex items-center justify-center shadow-[0_0_50px_rgba(244,63,94,0.9)] animate-in zoom-in-75 duration-150 ring-4 ring-pink-400/40">
               <span
                 key={countdown}
-                className="text-4xl sm:text-5xl font-black text-white font-cute drop-shadow-[0_4px_15px_rgba(0,0,0,0.9)] animate-in zoom-in-50 duration-150"
+                className="text-6xl sm:text-7xl md:text-8xl lg:text-9xl font-black text-white font-cute drop-shadow-[0_6px_25px_rgba(0,0,0,0.95)] animate-in zoom-in-50 duration-150 select-none tracking-tight"
               >
                 {countdown === 0 ? '✨' : countdown}
               </span>
             </div>
 
-            <div className="bg-pink-600/90 backdrop-blur-md text-white px-3.5 py-1 rounded-full font-bold text-xs sm:text-sm shadow-xl border border-white/30 flex items-center gap-1.5 animate-in fade-in duration-150">
-              <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+            <div className="bg-gradient-to-r from-pink-600 to-rose-600 text-white px-4 py-1.5 sm:px-5 sm:py-2 rounded-full font-extrabold text-xs sm:text-base md:text-lg shadow-2xl border border-white/40 flex items-center gap-2 animate-in fade-in duration-150">
+              <Sparkles className="w-4 h-4 sm:w-5 sm:h-5 text-amber-300 animate-spin" />
               <span>
                 {countdown === 0
                   ? '✨ CƯỜI TƯƠI LÊN NÀO! ✨'
@@ -1124,9 +1124,9 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
 
         {/* 4. POSE BREAK OVERLAY */}
         {breakCountdown !== null && (
-          <div className="absolute top-16 sm:top-18 inset-x-0 z-40 flex justify-center pointer-events-none animate-in fade-in slide-in-from-top-3 duration-150">
-            <div className="bg-gradient-to-r from-purple-600 via-pink-600 to-rose-600 text-white px-5 py-2.5 rounded-2xl text-sm sm:text-base font-black shadow-2xl flex items-center gap-2 border border-white/40 animate-pulse">
-              <Sparkles className="w-4 h-4 text-amber-300" />
+          <div className="absolute top-16 sm:top-20 inset-x-0 z-40 flex justify-center pointer-events-none animate-in fade-in slide-in-from-top-3 duration-150">
+            <div className="bg-gradient-to-r from-purple-600 via-pink-600 to-rose-600 text-white px-6 py-3 rounded-2xl text-base sm:text-lg md:text-xl font-black shadow-2xl flex items-center gap-2.5 border border-white/40 animate-pulse">
+              <Sparkles className="w-5 h-5 text-amber-300 animate-spin" />
               <span>Đổi dáng cho kiểu {capturedPhotos.length + 1} nào! ({breakCountdown}s)</span>
             </div>
           </div>
