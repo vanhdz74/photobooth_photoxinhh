@@ -152,44 +152,69 @@ export class CameraService {
 
     try {
       let stream: MediaStream | null = null;
+      const resConstraints = {
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+      };
+
       if (actualStreamId && actualStreamId !== 'default') {
         try {
-          // 1. Try with exact deviceId
+          // 1. Try with exact deviceId & ideal 1080p
           stream = await navigator.mediaDevices.getUserMedia({
             video: {
               deviceId: { exact: actualStreamId },
+              ...resConstraints,
             },
             audio: false,
           });
         } catch (e1) {
           try {
-            // 2. Try with loose deviceId constraint (avoids OverconstrainedError on iPadOS)
+            // 2. Try with loose deviceId constraint & ideal 1080p
             stream = await navigator.mediaDevices.getUserMedia({
-              video: { deviceId: actualStreamId },
+              video: {
+                deviceId: actualStreamId,
+                ...resConstraints,
+              },
               audio: false,
             });
           } catch (e2) {
             try {
               // 3. Try with ideal deviceId constraint
               stream = await navigator.mediaDevices.getUserMedia({
-                video: { deviceId: { ideal: actualStreamId } },
+                video: {
+                  deviceId: { ideal: actualStreamId },
+                  ...resConstraints,
+                },
                 audio: false,
               });
             } catch (e3) {
-              // 4. Fallback to general camera stream
-              stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+              // 4. Fallback to general camera stream with 1080p
+              stream = await navigator.mediaDevices.getUserMedia({
+                video: { ...resConstraints },
+                audio: false,
+              });
             }
           }
         }
       } else {
-        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { ...resConstraints },
+          audio: false,
+        });
       }
 
       this.currentStream = stream;
       return this.currentStream;
     } catch (err) {
-      console.warn('Cannot access real camera stream:', err);
-      return null;
+      console.warn('Cannot access real camera stream with 1080p, falling back to default:', err);
+      try {
+        const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        this.currentStream = fallbackStream;
+        return this.currentStream;
+      } catch (fallbackErr) {
+        console.warn('Fallback camera stream failed:', fallbackErr);
+        return null;
+      }
     }
   }
 
@@ -203,12 +228,13 @@ export class CameraService {
   async captureFromVideoElement(
     video: HTMLVideoElement,
     mirror = true,
-    cropToContainer?: { width: number; height: number } | null
+    cropToContainer?: { width: number; height: number } | null,
+    zoom = 1.0
   ): Promise<string> {
     // If video element is not ready or has 0 dimensions, try srcObject stream or wait briefly
     if (!video.videoWidth || !video.videoHeight) {
       if (video.srcObject instanceof MediaStream) {
-        return this.captureFromMediaStream(video.srcObject, mirror);
+        return this.captureFromMediaStream(video.srcObject, mirror, cropToContainer, zoom);
       }
       // Wait up to 300ms for video dimensions to load
       await new Promise<void>((resolve) => {
@@ -249,6 +275,16 @@ export class CameraService {
       }
     }
 
+    // Apply digital zoom crop
+    if (zoom > 1.0) {
+      const zoomedSw = Math.round(sw / zoom);
+      const zoomedSh = Math.round(sh / zoom);
+      sx += Math.round((sw - zoomedSw) / 2);
+      sy += Math.round((sh - zoomedSh) / 2);
+      sw = zoomedSw;
+      sh = zoomedSh;
+    }
+
     const canvas = document.createElement('canvas');
     canvas.width = sw;
     canvas.height = sh;
@@ -264,7 +300,12 @@ export class CameraService {
     return canvas.toDataURL('image/jpeg', 0.95);
   }
 
-  async captureFromMediaStream(stream: MediaStream, mirror = true): Promise<string> {
+  async captureFromMediaStream(
+    stream: MediaStream,
+    mirror = true,
+    cropToContainer?: { width: number; height: number } | null,
+    zoom = 1.0
+  ): Promise<string> {
     const videoTrack = stream.getVideoTracks()[0];
     if (!videoTrack) throw new Error('Không tìm thấy luồng video từ camera.');
 
@@ -274,16 +315,47 @@ export class CameraService {
         // @ts-ignore
         const imageCapture = new window.ImageCapture(videoTrack);
         const bitmap: ImageBitmap = await imageCapture.grabFrame();
+        const bWidth = bitmap.width;
+        const bHeight = bitmap.height;
+
+        let sx = 0;
+        let sy = 0;
+        let sw = bWidth;
+        let sh = bHeight;
+
+        if (cropToContainer && cropToContainer.width > 0 && cropToContainer.height > 0) {
+          const containerAspect = cropToContainer.width / cropToContainer.height;
+          const imgAspect = bWidth / bHeight;
+          if (containerAspect > imgAspect) {
+            sw = bWidth;
+            sh = Math.round(bWidth / containerAspect);
+            sy = Math.round((bHeight - sh) / 2);
+          } else {
+            sh = bHeight;
+            sw = Math.round(bHeight * containerAspect);
+            sx = Math.round((bWidth - sw) / 2);
+          }
+        }
+
+        if (zoom > 1.0) {
+          const zoomedSw = Math.round(sw / zoom);
+          const zoomedSh = Math.round(sh / zoom);
+          sx += Math.round((sw - zoomedSw) / 2);
+          sy += Math.round((sh - zoomedSh) / 2);
+          sw = zoomedSw;
+          sh = zoomedSh;
+        }
+
         const canvas = document.createElement('canvas');
-        canvas.width = bitmap.width;
-        canvas.height = bitmap.height;
+        canvas.width = sw;
+        canvas.height = sh;
         const ctx = canvas.getContext('2d');
         if (ctx) {
           if (mirror) {
             ctx.translate(canvas.width, 0);
             ctx.scale(-1, 1);
           }
-          ctx.drawImage(bitmap, 0, 0);
+          ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
           return canvas.toDataURL('image/jpeg', 0.95);
         }
       } catch (e) {
@@ -302,9 +374,38 @@ export class CameraService {
         try {
           const width = tempVideo.videoWidth > 0 ? tempVideo.videoWidth : 1280;
           const height = tempVideo.videoHeight > 0 ? tempVideo.videoHeight : 960;
+
+          let sx = 0;
+          let sy = 0;
+          let sw = width;
+          let sh = height;
+
+          if (cropToContainer && cropToContainer.width > 0 && cropToContainer.height > 0) {
+            const containerAspect = cropToContainer.width / cropToContainer.height;
+            const vAspect = width / height;
+            if (containerAspect > vAspect) {
+              sw = width;
+              sh = Math.round(width / containerAspect);
+              sy = Math.round((height - sh) / 2);
+            } else {
+              sh = height;
+              sw = Math.round(height * containerAspect);
+              sx = Math.round((width - sw) / 2);
+            }
+          }
+
+          if (zoom > 1.0) {
+            const zoomedSw = Math.round(sw / zoom);
+            const zoomedSh = Math.round(sh / zoom);
+            sx += Math.round((sw - zoomedSw) / 2);
+            sy += Math.round((sh - zoomedSh) / 2);
+            sw = zoomedSw;
+            sh = zoomedSh;
+          }
+
           const canvas = document.createElement('canvas');
-          canvas.width = width;
-          canvas.height = height;
+          canvas.width = sw;
+          canvas.height = sh;
           const ctx = canvas.getContext('2d');
           if (!ctx) {
             reject(new Error('Canvas context not available'));
@@ -314,7 +415,7 @@ export class CameraService {
             ctx.translate(canvas.width, 0);
             ctx.scale(-1, 1);
           }
-          ctx.drawImage(tempVideo, 0, 0, canvas.width, canvas.height);
+          ctx.drawImage(tempVideo, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
           tempVideo.srcObject = null;
           resolve(canvas.toDataURL('image/jpeg', 0.95));
         } catch (err) {

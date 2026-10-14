@@ -100,12 +100,24 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
   };
 
   const [fitMode, setFitModeState] = useState<'cover' | 'contain'>(() => {
-    const saved = safeGetItem('photobooth_fit_mode');
-    return saved === 'cover' || saved === 'contain' ? saved : 'contain';
+    const saved = safeGetItem('photobooth_fit_mode_v3');
+    if (saved === 'contain' || saved === 'cover') return saved;
+    // Default to 'cover' so camera preview is large and fills the screen
+    safeSetItem('photobooth_fit_mode_v3', 'cover');
+    return 'cover';
   });
   const setFitMode = (val: 'cover' | 'contain') => {
     setFitModeState(val);
-    safeSetItem('photobooth_fit_mode', val);
+    safeSetItem('photobooth_fit_mode_v3', val);
+  };
+
+  const [zoomLevel, setZoomLevelState] = useState<number>(() => {
+    const saved = safeGetItem('photobooth_camera_zoom');
+    return saved ? parseFloat(saved) || 1.0 : 1.0;
+  });
+  const setZoomLevel = (val: number) => {
+    setZoomLevelState(val);
+    safeSetItem('photobooth_camera_zoom', String(val));
   };
 
   const [soundEnabled, setSoundEnabledState] = useState<boolean>(() => {
@@ -285,7 +297,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
         photoData = await cameraService.captureFromHotFolder();
       } catch (hotErr: any) {
         if (videoRef.current && (videoRef.current.videoWidth > 0 || videoRef.current.srcObject)) {
-          photoData = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox);
+          photoData = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox, zoomLevel);
         } else {
           throw hotErr;
         }
@@ -296,11 +308,11 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
       photoData = await cameraService.captureFromSonyCamera();
     } else if (selectedDevice === 'phone-live-camera') {
       if (videoRef.current && (videoRef.current.videoWidth > 0 || videoRef.current.srcObject)) {
-        photoData = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox);
+        photoData = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox, zoomLevel);
       } else if (remoteStream) {
-        photoData = await cameraService.captureFromMediaStream(remoteStream, isMirrored);
+        photoData = await cameraService.captureFromMediaStream(remoteStream, isMirrored, containerBox, zoomLevel);
       } else if (realP2PService.getRemoteMediaStream()) {
-        photoData = await cameraService.captureFromMediaStream(realP2PService.getRemoteMediaStream()!, isMirrored);
+        photoData = await cameraService.captureFromMediaStream(realP2PService.getRemoteMediaStream()!, isMirrored, containerBox, zoomLevel);
       } else if (phoneLiveFrame) {
         photoData = phoneLiveFrame;
       } else {
@@ -309,7 +321,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
     } else if (isMock || selectedDevice === 'mock-camera') {
       photoData = await cameraService.getMockPhoto();
     } else if (videoRef.current && (videoRef.current.videoWidth > 0 || videoRef.current.srcObject)) {
-      photoData = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox);
+      photoData = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox, zoomLevel);
     } else {
       photoData = await cameraService.captureFromPhoneStream();
     }
@@ -458,6 +470,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
     remoteStream,
     phoneLiveFrame,
     sonyInfo.connected,
+    zoomLevel,
   ]);
 
   // Cancel / Pause shooting
@@ -719,7 +732,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
 
   const modalContent = (
     <div
-      className="fixed inset-0 z-[9999] bg-black text-white flex flex-col w-full h-full h-[100dvh] max-h-[100dvh] overflow-hidden overscroll-none select-none animate-in fade-in duration-150"
+      className="fixed inset-0 z-[9999] bg-black text-white w-full h-full h-[100dvh] max-h-[100dvh] overflow-hidden overscroll-none select-none animate-in fade-in duration-150"
       style={{
         position: 'fixed',
         top: 0,
@@ -737,15 +750,18 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
         <div className="fixed inset-0 z-[10002] bg-white animate-flash pointer-events-none" />
       )}
 
-      {/* 1. TOP HEADER BAR (RIGID FIXED HEIGHT, SHRINK-0) */}
-      <header className="relative w-full z-30 bg-black/85 backdrop-blur-md px-3 sm:px-6 py-2 sm:py-2.5 flex items-center justify-between gap-2.5 border-b border-white/10 shrink-0">
+      {/* 1. TOP HEADER BAR (FLOATING TRANSLUCENT HUD) */}
+      <header
+        onClick={(e) => e.stopPropagation()}
+        className="absolute top-0 inset-x-0 z-30 bg-gradient-to-b from-black/90 via-black/50 to-transparent px-3 sm:px-6 pt-2.5 pb-5 flex items-center justify-between gap-2.5 pointer-events-none"
+      >
         {/* Left: Photobooth Info & Progress Badges */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 pointer-events-auto">
           <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-gradient-to-tr from-pink-500 to-rose-500 text-white flex items-center justify-center shrink-0 shadow-lg border border-white/20">
             <Camera className="w-5 h-5" />
           </div>
           <div>
-            <h2 className="font-extrabold text-xs sm:text-base text-white font-cute leading-tight flex items-center gap-2">
+            <h2 className="font-extrabold text-xs sm:text-base text-white font-cute leading-tight flex items-center gap-2 drop-shadow">
               <span>Phòng Chụp Photobooth</span>
               <span className="text-[10px] bg-pink-500 text-white px-2 py-0.5 rounded-full font-sans font-bold shadow-xs">
                 {capturedPhotos.length}/{requiredPhotos} Kiểu
@@ -760,7 +776,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
                       ? 'w-5 sm:w-6 bg-pink-400 shadow-xs'
                       : idx === capturedPhotos.length && isShooting
                       ? 'w-5 sm:w-6 bg-white animate-pulse'
-                      : 'w-2 bg-white/30'
+                      : 'w-2 bg-white/40'
                   }`}
                 />
               ))}
@@ -770,7 +786,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
 
         {/* Center: Retake indicator banner if active */}
         {retakeTargetIndex !== null && (
-          <div className="bg-pink-600/90 text-white px-3 py-1 rounded-full text-xs font-bold border border-white/30 flex items-center gap-1.5 shadow-md animate-pulse">
+          <div className="bg-pink-600/90 text-white px-3 py-1 rounded-full text-xs font-bold border border-white/30 flex items-center gap-1.5 shadow-md animate-pulse pointer-events-auto">
             <RefreshCw className="w-3.5 h-3.5" />
             <span>Đang chụp lại kiểu #{retakeTargetIndex + 1}</span>
             <button
@@ -784,9 +800,9 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
         )}
 
         {/* Right: Quick Controls */}
-        <div className="flex items-center gap-1.5 sm:gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 pointer-events-auto">
           {/* Quick Timer Selector (1s, 2s, 3s, 5s) */}
-          <div className="flex items-center bg-black/60 border border-white/20 rounded-xl p-0.5 gap-0.5">
+          <div className="flex items-center bg-black/60 border border-white/20 rounded-xl p-0.5 gap-0.5 backdrop-blur-md">
             <Timer className="w-3.5 h-3.5 text-pink-400 ml-1.5 shrink-0 hidden sm:block" />
             {[1, 2, 3, 5].map((sec) => (
               <button
@@ -810,7 +826,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
           <button
             type="button"
             onClick={() => setIsAutoSeries(!isAutoSeries)}
-            className={`px-2.5 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center gap-1 shadow-md ${
+            className={`px-2.5 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center gap-1 shadow-md backdrop-blur-md ${
               isAutoSeries
                 ? 'bg-gradient-to-r from-purple-600 to-pink-600 border-pink-400 text-white'
                 : 'bg-black/60 border-white/20 text-gray-300 hover:text-white'
@@ -825,7 +841,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
           <button
             type="button"
             onClick={() => setIsMirrored(!isMirrored)}
-            className={`px-2.5 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer shadow-md ${
+            className={`px-2.5 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer shadow-md backdrop-blur-md ${
               isMirrored
                 ? 'bg-pink-600/80 border-pink-400 text-white'
                 : 'bg-black/60 border-white/20 text-gray-300 hover:text-white'
@@ -839,26 +855,44 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
           <button
             type="button"
             onClick={() => setFitMode(fitMode === 'cover' ? 'contain' : 'cover')}
-            className={`p-1.5 sm:px-2.5 sm:py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer shadow-md flex items-center gap-1.5 ${
-              fitMode === 'contain'
-                ? 'bg-pink-600/80 border-pink-400 text-white'
+            className={`p-1.5 sm:px-2.5 sm:py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer shadow-md flex items-center gap-1.5 backdrop-blur-md ${
+              fitMode === 'cover'
+                ? 'bg-gradient-to-r from-pink-600 to-rose-600 border-pink-400 text-white ring-2 ring-pink-500/40'
                 : 'bg-black/60 border-white/20 text-gray-300 hover:text-white'
             }`}
             title={
-              fitMode === 'contain'
-                ? 'Đang ở chế độ Xem đủ góc (toàn khung, không bị cắt góc trên dưới) - Bấm để chuyển sang Tràn viền'
-                : 'Đang ở chế độ Tràn viền - Bấm để chuyển sang Xem đủ góc (toàn khung)'
+              fitMode === 'cover'
+                ? 'Đang ở chế độ Tràn Viền (Toàn màn hình) - Bấm để chuyển sang Xem đủ góc'
+                : 'Đang ở chế độ Đủ Góc (Toàn khung) - Bấm để chuyển sang Tràn viền'
             }
           >
-            {fitMode === 'contain' ? <Maximize2 className="w-3.5 h-3.5" /> : <Minimize2 className="w-3.5 h-3.5" />}
-            <span className="hidden md:inline">{fitMode === 'contain' ? 'Đủ Góc' : 'Tràn Viền'}</span>
+            {fitMode === 'cover' ? <Maximize2 className="w-3.5 h-3.5 text-amber-300" /> : <Minimize2 className="w-3.5 h-3.5" />}
+            <span className="hidden md:inline">{fitMode === 'cover' ? 'Tràn Viền' : 'Đủ Góc'}</span>
+          </button>
+
+          {/* Quick Zoom in Header */}
+          <button
+            type="button"
+            onClick={() => {
+              const next = zoomLevel === 1.0 ? 1.25 : zoomLevel === 1.25 ? 1.5 : 1.0;
+              setZoomLevel(next);
+            }}
+            className={`p-1.5 sm:px-2.5 sm:py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer shadow-md flex items-center gap-1 backdrop-blur-md ${
+              zoomLevel > 1.0
+                ? 'bg-purple-600 border-purple-400 text-white ring-2 ring-purple-500/40'
+                : 'bg-black/60 border-white/20 text-gray-300 hover:text-white'
+            }`}
+            title="Thu phóng camera (1x -> 1.25x -> 1.5x)"
+          >
+            <span className="text-[11px]">🔍</span>
+            <span className="font-mono">{zoomLevel === 1.0 ? '1x' : `${zoomLevel}x`}</span>
           </button>
 
           {/* Sound Toggle */}
           <button
             type="button"
             onClick={() => setSoundEnabled(!soundEnabled)}
-            className="p-1.5 rounded-xl bg-black/60 hover:bg-white/20 border border-white/20 text-gray-200 hover:text-white transition-all cursor-pointer shadow-md"
+            className="p-1.5 rounded-xl bg-black/60 hover:bg-white/20 border border-white/20 text-gray-200 hover:text-white transition-all cursor-pointer shadow-md backdrop-blur-md"
             title={soundEnabled ? 'Tắt âm thanh chụp' : 'Bật âm thanh chụp'}
           >
             {soundEnabled ? <Volume2 className="w-4 h-4 text-emerald-400" /> : <VolumeX className="w-4 h-4 text-gray-400" />}
@@ -872,7 +906,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
             title={`Tải ảnh từ máy (${requiredPhotos} kiểu)`}
           >
             <Upload className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Tải Ảnh Từ Máy</span>
+            <span className="hidden sm:inline">Tải Ảnh</span>
           </button>
 
           {/* Hidden file input for device upload */}
@@ -919,7 +953,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
         </div>
       </header>
 
-      {/* 2. MAIN VIEWFINDER (FLEX-1 MIN-H-0 - STRICTLY CONSTRAINED, ZERO SCROLL) */}
+      {/* 2. MAIN VIEWFINDER (FULLSCREEN HERO VIEWPORT) */}
       <main
         onClick={() => {
           // Tap anywhere on viewfinder to shoot
@@ -927,23 +961,29 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
             startCaptureProcess();
           }
         }}
-        className="relative flex-1 w-full min-h-0 bg-black flex items-center justify-center overflow-hidden cursor-pointer select-none"
+        className="absolute inset-0 w-full h-full bg-black flex items-center justify-center overflow-hidden cursor-pointer select-none"
       >
         {/* CASE 0: SONY ALPHA WI-FI REMOTE DIRECT CONTROL */}
         {selectedDevice === 'sony-wifi-camera' ? (
           sonyLiveFrame ? (
-            <div className="w-full h-full max-h-full flex items-center justify-center relative overflow-hidden">
+            <div
+              className={`w-full h-full flex items-center justify-center relative overflow-hidden transition-all duration-200 ${
+                fitMode === 'contain' ? 'pt-14 pb-28 sm:pb-32 px-3' : 'p-0'
+              }`}
+            >
               <img
                 ref={sonyImgRef}
                 src={sonyLiveFrame}
                 alt="Sony Liveview Stream"
                 className={`w-full h-full max-h-full max-w-full ${
                   fitMode === 'cover' ? 'object-cover' : 'object-contain'
-                } transition-transform duration-150 will-change-transform ${
-                  isMirrored ? 'scale-x-[-1]' : ''
-                }`}
+                } transition-all duration-150 will-change-transform`}
+                style={{
+                  transform: `scale(${isMirrored ? -zoomLevel : zoomLevel}, ${zoomLevel})`,
+                  transformOrigin: 'center center',
+                }}
               />
-              <div className="absolute top-4 left-4 bg-emerald-600/90 backdrop-blur-md text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1.5 shadow-lg border border-white/20">
+              <div className="absolute top-16 left-4 bg-emerald-600/90 backdrop-blur-md text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1.5 shadow-lg border border-white/20">
                 <span className="w-2.5 h-2.5 rounded-full bg-white animate-ping" />
                 <span>SONY ALPHA (Wi-Fi Direct Remote)</span>
               </div>
@@ -986,7 +1026,11 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
           )
         ) : !isMock ? (
           /* CASE 1: HARDWARE CAMERA / USB CAPTURE CARD / WEBCAM */
-          <div className="w-full h-full max-h-full flex items-center justify-center relative overflow-hidden">
+          <div
+            className={`w-full h-full flex items-center justify-center relative overflow-hidden transition-all duration-200 ${
+              fitMode === 'contain' ? 'pt-14 pb-28 sm:pb-32 px-3' : 'p-0'
+            }`}
+          >
             <video
               ref={(el) => {
                 videoRef.current = el;
@@ -1000,9 +1044,11 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
               muted
               className={`w-full h-full max-h-full max-w-full ${
                 fitMode === 'cover' ? 'object-cover' : 'object-contain'
-              } transition-transform duration-150 will-change-transform ${
-                isMirrored ? 'scale-x-[-1]' : ''
-              }`}
+              } transition-all duration-150 will-change-transform`}
+              style={{
+                transform: `scale(${isMirrored ? -zoomLevel : zoomLevel}, ${zoomLevel})`,
+                transformOrigin: 'center center',
+              }}
             />
 
             {/* Top Device Pill Status */}
@@ -1011,7 +1057,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
               if (!activeDev) return null;
               return (
                 <div
-                  className={`absolute top-4 left-4 backdrop-blur-md text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-2 shadow-xl border border-white/20 ${
+                  className={`absolute top-16 left-4 backdrop-blur-md text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-2 shadow-xl border border-white/20 ${
                     activeDev.isUsb ? 'bg-emerald-600/90' : 'bg-gray-900/80'
                   }`}
                 >
@@ -1030,7 +1076,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
                   cycleNextCamera();
                 }}
                 disabled={isShooting}
-                className="absolute top-4 right-4 bg-black/60 hover:bg-black/80 text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1.5 border border-white/20 backdrop-blur-md cursor-pointer shadow-lg active:scale-95 transition-all"
+                className="absolute top-16 right-4 bg-black/60 hover:bg-black/80 text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1.5 border border-white/20 backdrop-blur-md cursor-pointer shadow-lg active:scale-95 transition-all"
                 title="Đổi camera tiếp theo"
               >
                 <RefreshCw className="w-3.5 h-3.5 text-pink-400" />
@@ -1053,9 +1099,9 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
           </div>
         )}
 
-        {/* 3. TOP-RIGHT COUNTDOWN OVERLAY (Placed at top-right without full-screen obscuring scrim) */}
+        {/* 3. TOP-RIGHT COUNTDOWN OVERLAY */}
         {countdown !== null && (
-          <div className="absolute top-4 right-4 sm:top-5 sm:right-5 z-40 flex flex-col items-end gap-2 pointer-events-none animate-in fade-in slide-in-from-top-2 duration-150">
+          <div className="absolute top-16 right-4 sm:top-18 sm:right-6 z-40 flex flex-col items-end gap-2 pointer-events-none animate-in fade-in slide-in-from-top-2 duration-150">
             <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full bg-black/80 backdrop-blur-md border-4 border-pink-500 flex items-center justify-center shadow-[0_0_35px_rgba(244,63,94,0.8)] animate-in zoom-in-75 duration-150">
               <span
                 key={countdown}
@@ -1076,9 +1122,9 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
           </div>
         )}
 
-        {/* 4. POSE BREAK OVERLAY (Top floating pill without full-screen dimming) */}
+        {/* 4. POSE BREAK OVERLAY */}
         {breakCountdown !== null && (
-          <div className="absolute top-4 sm:top-6 inset-x-0 z-40 flex justify-center pointer-events-none animate-in fade-in slide-in-from-top-3 duration-150">
+          <div className="absolute top-16 sm:top-18 inset-x-0 z-40 flex justify-center pointer-events-none animate-in fade-in slide-in-from-top-3 duration-150">
             <div className="bg-gradient-to-r from-purple-600 via-pink-600 to-rose-600 text-white px-5 py-2.5 rounded-2xl text-sm sm:text-base font-black shadow-2xl flex items-center gap-2 border border-white/40 animate-pulse">
               <Sparkles className="w-4 h-4 text-amber-300" />
               <span>Đổi dáng cho kiểu {capturedPhotos.length + 1} nào! ({breakCountdown}s)</span>
@@ -1273,9 +1319,12 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
         )}
       </main>
 
-      {/* 3. BOTTOM CONTROL DOCK (RIGID FIXED HEIGHT, SHRINK-0, ZERO SCROLL) */}
-      <footer className="relative w-full z-30 bg-black/90 backdrop-blur-md px-3 sm:px-6 py-2.5 sm:py-3 flex flex-col gap-2 border-t border-white/10 shrink-0">
-        <div className="max-w-6xl w-full mx-auto flex items-center justify-between gap-3">
+      {/* 3. BOTTOM CONTROL DOCK (FLOATING GLASS DOCK) */}
+      <footer
+        onClick={(e) => e.stopPropagation()}
+        className="absolute bottom-0 inset-x-0 z-30 bg-gradient-to-t from-black/95 via-black/55 to-transparent px-3 sm:px-6 pt-6 pb-2.5 sm:pb-3 flex flex-col gap-1.5 pointer-events-none"
+      >
+        <div className="max-w-6xl w-full mx-auto flex items-center justify-between gap-3 pointer-events-auto">
           {/* Left: Captured Live Thumbnails Strip WITH CLICK-TO-ENLARGE */}
           <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto py-0.5 max-w-[34vw] sm:max-w-sm no-scrollbar">
             {capturedPhotos.length === 0 ? (
@@ -1311,8 +1360,31 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
             )}
           </div>
 
-          {/* Center: GIANT SHUTTER BUTTON */}
+          {/* Center: QUICK ZOOM + SHUTTER BUTTON */}
           <div className="flex flex-col items-center gap-1">
+            {/* Quick Zoom Switcher (1x, 1.25x, 1.5x) */}
+            <div className="flex items-center bg-black/60 backdrop-blur-md border border-white/20 rounded-full p-0.5 gap-0.5 shadow-lg mb-0.5">
+              {[1.0, 1.25, 1.5].map((z) => (
+                <button
+                  key={z}
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setZoomLevel(z);
+                  }}
+                  disabled={isShooting}
+                  className={`py-0.5 px-2.5 rounded-full text-[10px] font-black transition-all cursor-pointer ${
+                    zoomLevel === z
+                      ? 'bg-pink-600 text-white shadow-md scale-105'
+                      : 'text-gray-300 hover:text-white hover:bg-white/10'
+                  }`}
+                  title={`Thu phóng camera ${z}x`}
+                >
+                  {z === 1.0 ? '1x' : `${z}x`}
+                </button>
+              ))}
+            </div>
+
             {capturedPhotos.length < requiredPhotos || retakeTargetIndex !== null ? (
               <button
                 type="button"
@@ -1324,7 +1396,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
                     startCaptureProcess();
                   }
                 }}
-                className={`group relative w-16 h-16 sm:w-20 sm:h-20 rounded-full transition-all flex items-center justify-center cursor-pointer active:scale-90 border-4 shadow-2xl ${
+                className={`group relative w-16 h-16 sm:w-18 sm:h-18 rounded-full transition-all flex items-center justify-center cursor-pointer active:scale-90 border-4 shadow-2xl ${
                   isShooting
                     ? 'bg-rose-600 border-white ring-4 ring-rose-400/50'
                     : 'bg-white hover:bg-pink-50 border-pink-500 ring-4 ring-white/40 shadow-[0_0_30px_rgba(244,63,94,0.6)] hover:shadow-[0_0_45px_rgba(244,63,94,0.9)]'
@@ -1333,11 +1405,11 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
               >
                 {isShooting ? (
                   <div className="flex flex-col items-center justify-center text-white">
-                    <X className="w-7 h-7 stroke-[3]" />
+                    <X className="w-6 h-6 stroke-[3]" />
                     <span className="text-[8px] font-black uppercase">Dừng</span>
                   </div>
                 ) : (
-                  <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-gradient-to-tr from-pink-500 via-rose-500 to-pink-500 flex items-center justify-center shadow-inner group-hover:scale-105 transition-transform">
+                  <div className="w-11 h-11 sm:w-13 sm:h-13 rounded-full bg-gradient-to-tr from-pink-500 via-rose-500 to-pink-500 flex items-center justify-center shadow-inner group-hover:scale-105 transition-transform">
                     <Camera className="w-6 h-6 sm:w-7 sm:h-7 text-white drop-shadow" />
                   </div>
                 )}
@@ -1347,7 +1419,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
               <button
                 type="button"
                 onClick={handleFinish}
-                className="py-3 px-6 sm:px-8 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-white font-black text-sm sm:text-base shadow-[0_0_30px_rgba(16,185,129,0.7)] transition-all hover:scale-105 active:scale-95 flex items-center gap-2 cursor-pointer border-2 border-white/40"
+                className="py-2.5 px-6 sm:px-8 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-white font-black text-sm sm:text-base shadow-[0_0_30px_rgba(16,185,129,0.7)] transition-all hover:scale-105 active:scale-95 flex items-center gap-2 cursor-pointer border-2 border-white/40"
               >
                 <CheckCircle2 className="w-5 h-5 text-amber-300" />
                 <span>Hoàn Tất & Dùng Bộ Ảnh</span>
@@ -1355,7 +1427,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
             )}
 
             {/* Label under shutter */}
-            <span className="text-[11px] sm:text-xs font-bold text-white drop-shadow tracking-wide">
+            <span className="text-[11px] font-bold text-white drop-shadow tracking-wide">
               {isShooting
                 ? `Đang chụp ${currentShotIndex}/${requiredPhotos}... (Bấm dừng)`
                 : retakeTargetIndex !== null
@@ -1379,7 +1451,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
                     e.stopPropagation();
                     setPreviewPhotoIndex(0);
                   }}
-                  className="py-2 px-3 rounded-xl bg-pink-500/20 hover:bg-pink-500/30 border border-pink-400/40 text-pink-200 text-xs font-bold transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer shadow-xs"
+                  className="py-1.5 px-3 rounded-xl bg-pink-500/20 hover:bg-pink-500/30 border border-pink-400/40 text-pink-200 text-xs font-bold transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer shadow-xs"
                   title="Phóng to kiểm tra các ảnh đã chụp"
                 >
                   <Eye className="w-3.5 h-3.5 text-pink-300" />
@@ -1389,7 +1461,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
                 <button
                   type="button"
                   onClick={handleRetakeLast}
-                  className="py-2 px-3 rounded-xl bg-white/10 hover:bg-white/20 active:bg-white/30 border border-white/20 text-white text-xs font-bold transition-all active:scale-95 flex items-center gap-1 cursor-pointer shadow-xs"
+                  className="py-1.5 px-3 rounded-xl bg-white/10 hover:bg-white/20 active:bg-white/30 border border-white/20 text-white text-xs font-bold transition-all active:scale-95 flex items-center gap-1 cursor-pointer shadow-xs"
                   title="Chụp lại kiểu ảnh vừa rồi"
                 >
                   <RefreshCw className="w-3.5 h-3.5 text-pink-300" />
@@ -1399,7 +1471,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
                 <button
                   type="button"
                   onClick={handleRetakeAll}
-                  className="py-2 px-2.5 rounded-xl bg-white/10 hover:bg-rose-600/60 active:bg-rose-600 border border-white/20 text-white text-xs font-bold transition-all active:scale-95 flex items-center gap-1 cursor-pointer shadow-xs"
+                  className="py-1.5 px-2.5 rounded-xl bg-white/10 hover:bg-rose-600/60 active:bg-rose-600 border border-white/20 text-white text-xs font-bold transition-all active:scale-95 flex items-center gap-1 cursor-pointer shadow-xs"
                   title="Xoá tất cả và chụp lại từ đầu"
                 >
                   <RotateCcw className="w-3.5 h-3.5 text-rose-300" />
@@ -1412,7 +1484,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
               <button
                 type="button"
                 onClick={handleFinish}
-                className="py-2 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all active:scale-95 flex items-center gap-1 cursor-pointer shadow-md"
+                className="py-1.5 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all active:scale-95 flex items-center gap-1 cursor-pointer shadow-md"
               >
                 <CheckCircle2 className="w-3.5 h-3.5 text-white" />
                 <span>Xong ({capturedPhotos.length})</span>
@@ -1422,7 +1494,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
         </div>
 
         {/* Bottom Hardware Bar */}
-        <div className="max-w-6xl w-full mx-auto flex items-center justify-between gap-2 text-[11px] border-t border-white/10 pt-1.5 text-gray-300">
+        <div className="max-w-6xl w-full mx-auto flex items-center justify-between gap-2 text-[11px] border-t border-white/10 pt-1 text-gray-300 pointer-events-auto">
           <div className="flex items-center gap-1.5 overflow-x-auto max-w-full">
             <span className="font-semibold text-gray-400 shrink-0">Nguồn Cam:</span>
             <select
