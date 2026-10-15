@@ -158,17 +158,21 @@ export const PhoneRemoteView: React.FC = () => {
         canvasCaptureRef.current = document.createElement('canvas');
       }
 
-      // Stream frames at ~20 fps to Photobooth
+      // Stream frames at ~20 fps to Photobooth (HD resolution for sharp preview)
       frameIntervalRef.current = setInterval(() => {
         if (videoRef.current && canvasCaptureRef.current && videoRef.current.videoWidth) {
           const video = videoRef.current;
           const canvas = canvasCaptureRef.current;
-          canvas.width = 640;
-          canvas.height = 480;
+          const vWidth = video.videoWidth || 1280;
+          const vHeight = video.videoHeight || 720;
+          const targetW = Math.min(vWidth, 1280);
+          const targetH = Math.round((vHeight / vWidth) * targetW);
+          canvas.width = targetW;
+          canvas.height = targetH;
           const ctx = canvas.getContext('2d');
           if (ctx) {
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const frameUrl = canvas.toDataURL('image/jpeg', 0.65);
+            const frameUrl = canvas.toDataURL('image/jpeg', 0.82);
             realP2PService.sendPhoneCameraFrame(clientId, frameUrl);
           }
         }

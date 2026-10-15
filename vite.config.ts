@@ -173,9 +173,22 @@ function p2pRelayPlugin(): Plugin {
   };
 }
 
+import { handleHotFolderApiRequest } from './src/server/hotFolderApi';
+
+function hotFolderVitePlugin(): Plugin {
+  return {
+    name: 'hot-folder-server',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        handleHotFolderApiRequest(req, res, next);
+      });
+    },
+  };
+}
+
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [react(), p2pRelayPlugin()],
+  plugins: [react(), p2pRelayPlugin(), hotFolderVitePlugin()],
   server: {
     host: true, // Listen on 0.0.0.0 so other devices on same Wi-Fi can connect
     port: 5173,

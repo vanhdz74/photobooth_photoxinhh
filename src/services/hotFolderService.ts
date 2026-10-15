@@ -1,17 +1,22 @@
 /**
- * Hot Folder & Sony Imaging Edge Remote Integration Service
+ * Hot Folder & Canon / Sony Remote Integration Service
  * 
- * Enables PhotoXinhh to control Sony cameras via:
- * 1. Sony Imaging Edge Desktop Remote (Hot Folder Auto-Import + Shutter Trigger)
- * 2. Works seamlessly in Electron (Native Chokidar / AppleScript / File Dialog)
- * 3. Works seamlessly in Web Browsers (Chrome File System Access API)
+ * Enables PhotoXinhh to control Canon & Sony cameras via:
+ * 1. Canon EOS Utility / Sony Imaging Edge Remote / Nikon / Fuji
+ * 2. Works natively in Electron (Chokidar / AppleScript / PowerShell / Native Picker)
+ * 3. Works seamlessly on iPad / Mobile / LAN Browsers via Local Server Bridge API (/api/hot-folder/*)
+ * 4. Fallback for Chromium File System Access API
  */
 
 export interface HotFolderStatus {
   folderPath: string;
   isElectron: boolean;
+  isServerBridge: boolean;
+  serverPlatform?: string;
   isWatching: boolean;
   autoShutterEnabled: boolean;
+  cameraAppRunning?: boolean;
+  cameraAppName?: string | null;
   liveviewDeviceId: string;
   latestPhotoUrl: string | null;
   latestPhotoName: string | null;
@@ -27,6 +32,10 @@ export class HotFolderService {
   private autoShutterEnabled: boolean = true;
   private liveviewDeviceId: string = '';
   private isWatching: boolean = false;
+  private isServerBridge: boolean = false;
+  private serverPlatform: string = '';
+  private cameraAppRunning: boolean = false;
+  private cameraAppName: string | null = null;
   private latestPhotoUrl: string | null = null;
   private latestPhotoName: string | null = null;
   private lastMessage: string | null = null;
@@ -35,6 +44,7 @@ export class HotFolderService {
   private statusListeners: HotFolderStatusListener[] = [];
   private photoListeners: HotFolderPhotoListener[] = [];
   private unsubscribeElectronPhoto: (() => void) | null = null;
+  private checkInterval: NodeJS.Timeout | null = null;
 
   // Browser-based File System Access handle (Chromium)
   private webDirHandle: any = null;
@@ -47,20 +57,28 @@ export class HotFolderService {
       this.liveviewDeviceId = localStorage.getItem('px_hot_folder_liveview_device') || '';
     }
 
-    // Auto-listen to Electron photo events if in Electron
-    if (typeof window !== 'undefined' && window.electronAPI) {
+    // 1. Electron Environment
+    if (this.isElectronEnvironment() && window.electronAPI) {
       this.unsubscribeElectronPhoto = window.electronAPI.onHotFolderPhoto((data) => {
         this.latestPhotoUrl = data.dataUrl;
         this.latestPhotoName = data.fileName;
-        this.lastMessage = `Đã nhận ảnh mới: ${data.fileName}`;
+        this.lastMessage = `✅ Đã nhận ảnh mới: ${data.fileName}`;
         this.isError = false;
         this.notifyStatus();
         this.notifyPhoto(data.dataUrl, data.fileName);
       });
 
-      // Auto start watching saved folder if present
       if (this.folderPath) {
         this.startWatching(this.folderPath).catch(() => {});
+      }
+    } else {
+      // 2. Web / iPad / LAN Browser Environment -> Connect to local Server Bridge
+      this.checkServerBridge().catch(() => {});
+      // Periodic status sync every 6 seconds when active
+      if (typeof window !== 'undefined') {
+        this.checkInterval = setInterval(() => {
+          this.checkServerBridge().catch(() => {});
+        }, 6000);
       }
     }
   }
@@ -70,18 +88,63 @@ export class HotFolderService {
       this.unsubscribeElectronPhoto();
       this.unsubscribeElectronPhoto = null;
     }
+    if (this.checkInterval) {
+      clearInterval(this.checkInterval);
+      this.checkInterval = null;
+    }
   }
 
   isElectronEnvironment(): boolean {
     return typeof window !== 'undefined' && !!window.electronAPI?.isElectron;
   }
 
+  /**
+   * Checks if the Vite Dev Server / Node Server provides /api/hot-folder endpoints
+   */
+  async checkServerBridge(): Promise<boolean> {
+    if (typeof window === 'undefined' || typeof fetch === 'undefined') return false;
+
+    try {
+      const res = await fetch('/api/hot-folder/status', {
+        headers: { Accept: 'application/json' },
+      });
+      if (!res.ok) return false;
+
+      const data = await res.json();
+      if (data && data.isServerBridge) {
+        this.isServerBridge = true;
+        this.serverPlatform = data.serverPlatform || '';
+        this.cameraAppRunning = !!data.cameraAppRunning;
+        this.cameraAppName = data.cameraAppName || null;
+
+        if (!this.folderPath && data.folderPath) {
+          this.folderPath = data.folderPath;
+        }
+
+        this.isWatching = true;
+        if (!this.lastMessage) {
+          const osName = this.serverPlatform === 'darwin' ? 'Mac' : 'Windows';
+          this.lastMessage = `Đã kết nối máy tính chủ (${osName})${this.cameraAppName ? ` & ${this.cameraAppName}` : ''}`;
+        }
+        this.notifyStatus();
+        return true;
+      }
+    } catch {
+      // Server bridge not available (e.g. static host)
+    }
+    return false;
+  }
+
   getStatus(): HotFolderStatus {
     return {
       folderPath: this.folderPath,
       isElectron: this.isElectronEnvironment(),
+      isServerBridge: this.isServerBridge,
+      serverPlatform: this.serverPlatform,
       isWatching: this.isWatching,
       autoShutterEnabled: this.autoShutterEnabled,
+      cameraAppRunning: this.cameraAppRunning,
+      cameraAppName: this.cameraAppName,
       liveviewDeviceId: this.liveviewDeviceId,
       latestPhotoUrl: this.latestPhotoUrl,
       latestPhotoName: this.latestPhotoName,
@@ -135,6 +198,13 @@ export class HotFolderService {
       localStorage.setItem('px_hot_folder_auto_shutter', enabled ? 'true' : 'false');
     }
     this.notifyStatus();
+    if (this.isServerBridge) {
+      fetch('/api/hot-folder/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ autoShutter: enabled }),
+      }).catch(() => {});
+    }
   }
 
   isAutoShutterEnabled(): boolean {
@@ -178,7 +248,27 @@ export class HotFolderService {
       }
     }
 
-    // 2. Web File System Access API (Chrome, Edge, Opera)
+    // 2. Server Bridge (Web on iPad / mobile / local browser)
+    if (this.isServerBridge) {
+      try {
+        const res = await fetch('/api/hot-folder/select-folder', { method: 'POST' });
+        const data = await res.json();
+        if (data.success && data.folderPath) {
+          this.setFolderPath(data.folderPath);
+          this.lastMessage = `Đã chọn thư mục trên máy tính: ${data.folderPath}`;
+          this.isError = false;
+          this.notifyStatus();
+          return data.folderPath;
+        } else if (data.folderPath) {
+          this.setFolderPath(data.folderPath);
+          return data.folderPath;
+        }
+      } catch (err: any) {
+        console.warn('Server bridge select folder failed:', err);
+      }
+    }
+
+    // 3. Web File System Access API (Chromium showDirectoryPicker)
     if (typeof window !== 'undefined' && 'showDirectoryPicker' in window) {
       try {
         // @ts-ignore
@@ -202,8 +292,7 @@ export class HotFolderService {
       }
     }
 
-    this.lastMessage = 'Trình duyệt hiện tại không hỗ trợ chọn thư mục trực tiếp. Hãy dùng ứng dụng Desktop PhotoXinhh (Electron) hoặc Chrome!';
-    this.isError = true;
+    this.lastMessage = 'Để sử dụng Hot Folder tốt nhất, hãy kết nối qua máy chủ dev hoặc chạy ứng dụng Desktop!';
     this.notifyStatus();
     return null;
   }
@@ -240,6 +329,21 @@ export class HotFolderService {
       }
     }
 
+    if (this.isServerBridge) {
+      try {
+        await fetch('/api/hot-folder/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ folderPath: target, autoShutter: this.autoShutterEnabled }),
+        });
+        this.isWatching = true;
+        this.lastMessage = `Đang theo dõi thư mục: ${target}`;
+        this.isError = false;
+        this.notifyStatus();
+        return true;
+      } catch {}
+    }
+
     if (this.webDirHandle) {
       this.isWatching = true;
       this.notifyStatus();
@@ -261,9 +365,10 @@ export class HotFolderService {
   }
 
   /**
-   * Triggers Sony Imaging Edge Remote Shutter
+   * Triggers Canon EOS Utility / Sony Remote Shutter
    */
-  async triggerShutter(): Promise<{ success: boolean; warning?: string; error?: string }> {
+  async triggerShutter(): Promise<{ success: boolean; appName?: string; warning?: string; error?: string }> {
+    // 1. Electron Mode
     if (this.isElectronEnvironment() && window.electronAPI) {
       const res = await window.electronAPI.triggerSonyShutter();
       if (res.warning) {
@@ -272,9 +377,25 @@ export class HotFolderService {
       }
       return res;
     }
+
+    // 2. Server Bridge Mode (iPad, Phone, Web Browser)
+    if (this.isServerBridge) {
+      try {
+        const res = await fetch('/api/hot-folder/trigger-shutter', { method: 'POST' });
+        const data = await res.json();
+        if (data.warning) {
+          this.lastMessage = data.warning;
+          this.notifyStatus();
+        }
+        return data;
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    }
+
     return {
       success: true,
-      warning: 'Đang chạy trên web. Vui lòng bấm chụp trên máy ảnh hoặc remote cầm tay Sony!',
+      warning: 'Đang chạy độc lập trên Web. Vui lòng bấm chụp trên máy ảnh hoặc remote cầm tay!',
     };
   }
 
@@ -285,13 +406,13 @@ export class HotFolderService {
    * 3. Returns base64 DataURL
    */
   async capturePhoto(timeoutMs = 15000): Promise<string> {
-    if (!this.folderPath && !this.webDirHandle) {
-      throw new Error('Chưa chọn thư mục Hot Folder. Vui lòng bấm "Chọn Thư Mục" lưu ảnh của Sony Imaging Edge!');
+    if (!this.folderPath && !this.webDirHandle && !this.isServerBridge) {
+      throw new Error('Chưa chọn thư mục Hot Folder. Vui lòng chọn thư mục lưu ảnh của Canon EOS Utility hoặc Sony Imaging Edge!');
     }
 
-    // 1. Electron Workflow (Native and robust)
+    // 1. Electron Workflow
     if (this.isElectronEnvironment() && window.electronAPI) {
-      this.lastMessage = '📸 Đang kích hoạt chụp và chờ ảnh từ máy ảnh Sony...';
+      this.lastMessage = '📸 Đang kích hoạt chụp và chờ ảnh từ máy ảnh Canon/Sony...';
       this.notifyStatus();
 
       const res = await window.electronAPI.waitForHotFolderPhoto({
@@ -303,7 +424,7 @@ export class HotFolderService {
       if (res.success && res.dataUrl) {
         this.latestPhotoUrl = res.dataUrl;
         this.latestPhotoName = res.fileName || 'photo.jpg';
-        this.lastMessage = `✅ Đã nhận ảnh: ${res.fileName}`;
+        this.lastMessage = `✅ Đã nhận ảnh gốc: ${res.fileName}`;
         this.isError = false;
         this.notifyStatus();
         this.notifyPhoto(res.dataUrl, res.fileName || 'photo.jpg');
@@ -317,7 +438,44 @@ export class HotFolderService {
       }
     }
 
-    // 2. Web Browser File System Access Workflow (Chromium showDirectoryPicker)
+    // 2. Server Bridge Workflow (iPad / LAN Mobile Client)
+    if (this.isServerBridge) {
+      this.lastMessage = '📸 Đang gửi lệnh chụp sang máy tính & chờ ảnh gốc...';
+      this.notifyStatus();
+
+      const res = await fetch('/api/hot-folder/wait-photo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          folderPath: this.folderPath,
+          timeoutMs,
+          triggerShutter: this.autoShutterEnabled,
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Máy chủ không phản hồi (Mã lỗi ${res.status})`);
+      }
+
+      const data = await res.json();
+      if (data.success && data.dataUrl) {
+        this.latestPhotoUrl = data.dataUrl;
+        this.latestPhotoName = data.fileName || 'photo.jpg';
+        this.lastMessage = `✅ Đã nhận ảnh gốc: ${data.fileName}`;
+        this.isError = false;
+        this.notifyStatus();
+        this.notifyPhoto(data.dataUrl, data.fileName || 'photo.jpg');
+        return data.dataUrl;
+      } else {
+        const errMsg = data.error || data.warning || 'Hết thời gian chờ: Không nhận được file ảnh mới.';
+        this.lastMessage = errMsg;
+        this.isError = true;
+        this.notifyStatus();
+        throw new Error(errMsg);
+      }
+    }
+
+    // 3. Web Browser File System Access Workflow (Chromium showDirectoryPicker)
     if (this.webDirHandle) {
       this.lastMessage = '📸 Đang quét ảnh mới trong thư mục trình duyệt...';
       this.notifyStatus();
@@ -331,7 +489,6 @@ export class HotFolderService {
         }
       } catch {}
 
-      // Wait for new file
       return new Promise<string>((resolve, reject) => {
         let finished = false;
 
@@ -354,7 +511,6 @@ export class HotFolderService {
               if ((lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.png')) && !existingNames.has(name)) {
                 const file = await handle.getFile();
                 if (file.lastModified >= startTime - 500 && file.size > 1000) {
-                  // File found! Read as DataURL
                   finished = true;
                   clearTimeout(timer);
                   clearInterval(checkInterval);
@@ -397,6 +553,17 @@ export class HotFolderService {
           return res.dataUrl;
         }
       } catch (e) {}
+    } else if (this.isServerBridge) {
+      try {
+        const res = await fetch(`/api/hot-folder/latest?folder=${encodeURIComponent(this.folderPath)}`);
+        const data = await res.json();
+        if (data.success && data.dataUrl) {
+          this.latestPhotoUrl = data.dataUrl;
+          this.latestPhotoName = data.fileName || 'latest.jpg';
+          this.notifyStatus();
+          return data.dataUrl;
+        }
+      } catch {}
     }
     return this.latestPhotoUrl;
   }

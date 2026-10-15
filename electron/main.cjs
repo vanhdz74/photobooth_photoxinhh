@@ -218,19 +218,20 @@ ipcMain.handle('hot-folder-select', async () => {
   return result.filePaths[0];
 });
 
-// 6.2 Trigger Sony Remote Shutter via AppleScript / OS automation
+// 6.2 Trigger Canon EOS Utility / Sony Remote Shutter via AppleScript / OS automation
 ipcMain.handle('hot-folder-trigger-shutter', async () => {
   if (process.platform === 'darwin') {
-    // macOS: Send Spacebar trigger to Sony Imaging Edge "Remote"
+    // macOS: Send Spacebar trigger to Canon EOS Utility, Sony Imaging Edge Remote, Nikon, Fuji
     const script = `
       tell application "System Events"
-        set sonyProcs to (every process whose name is "Remote" or name contains "Imaging Edge" or name is "Sony Remote")
-        if (count of sonyProcs) > 0 then
-          set targetProc to item 1 of sonyProcs
+        set cameraProcs to (every process whose name is "Remote" or name contains "Imaging Edge" or name is "Sony Remote" or name contains "EOS Utility" or name is "EOS Utility" or name is "EOS Utility 3" or name is "EOS Utility 2" or name contains "Remote Shooting" or name contains "Camera Control Pro" or name is "X Acquire" or name contains "FUJIFILM")
+        if (count of cameraProcs) > 0 then
+          set targetProc to item 1 of cameraProcs
+          set targetName to name of targetProc
           set frontmost of targetProc to true
-          delay 0.05
+          delay 0.1
           key code 49 -- Spacebar trigger shutter
-          return "OK"
+          return "OK:" & targetName
         else
           return "NOT_RUNNING"
         end if
@@ -239,14 +240,24 @@ ipcMain.handle('hot-folder-trigger-shutter', async () => {
     return new Promise((resolve) => {
       exec(`osascript -e '${script.replace(/'/g, "'\\''")}'`, (err, stdout) => {
         if (err) {
-          console.warn('[Sony Shutter] osascript error:', err.message);
+          console.warn('[Camera Shutter] osascript error:', err.message);
+          if (err.message.includes('-1743') || err.message.includes('Not authorized') || err.message.includes('Quyền')) {
+            resolve({
+              success: false,
+              warning: 'macOS chưa cấp quyền Tự Động Hóa (Automation) cho PhotoXinhh. Vui lòng vào Cài đặt hệ thống > Quyền riêng tư & bảo mật > Tự động hóa để bật quyền!',
+            });
+            return;
+          }
           resolve({ success: false, error: err.message });
         } else {
           const res = (stdout || '').trim();
-          if (res === 'NOT_RUNNING') {
+          if (res.startsWith('OK:')) {
+            const appName = res.replace('OK:', '').trim();
+            resolve({ success: true, appName });
+          } else if (res === 'NOT_RUNNING') {
             resolve({
               success: false,
-              warning: 'Phần mềm Sony Imaging Edge "Remote" chưa được mở trên Mac. Bạn có thể mở Remote trước hoặc bấm chụp trực tiếp trên máy ảnh!',
+              warning: 'Phần mềm Canon EOS Utility hoặc Sony Remote chưa được mở trên Mac. Bạn hãy mở Canon/Sony lên hoặc bấm chụp trực tiếp trên máy ảnh!',
             });
           } else {
             resolve({ success: true });
@@ -257,12 +268,12 @@ ipcMain.handle('hot-folder-trigger-shutter', async () => {
   } else if (process.platform === 'win32') {
     const ps = `
       Add-Type -AssemblyName System.Windows.Forms
-      $p = Get-Process -Name "Remote" -ErrorAction SilentlyContinue
+      $p = Get-Process | Where-Object { $_.Name -match "^(Remote|EOS Utility|EOS3|EOSUtility|CameraControl|XAcquire)" } | Select-Object -First 1
       if ($p) {
         [Microsoft.VisualBasic.Interaction]::AppActivate($p.Id)
-        Start-Sleep -Milliseconds 60
+        Start-Sleep -Milliseconds 100
         [System.Windows.Forms.SendKeys]::SendWait(" ")
-        Write-Output "OK"
+        Write-Output ("OK:" + $p.Name)
       } else {
         Write-Output "NOT_RUNNING"
       }
@@ -272,8 +283,11 @@ ipcMain.handle('hot-folder-trigger-shutter', async () => {
         if (err) resolve({ success: false, error: err.message });
         else {
           const res = (stdout || '').trim();
-          if (res === 'NOT_RUNNING') {
-            resolve({ success: false, warning: 'Phần mềm Remote của Sony chưa được mở trên Windows!' });
+          if (res.startsWith('OK:')) {
+            const appName = res.replace('OK:', '').trim();
+            resolve({ success: true, appName });
+          } else if (res === 'NOT_RUNNING') {
+            resolve({ success: false, warning: 'Phần mềm Canon EOS Utility hoặc Sony Remote chưa được mở trên Windows!' });
           } else {
             resolve({ success: true });
           }
@@ -398,9 +412,9 @@ ipcMain.handle('hot-folder-wait-photo', async (event, options = {}) => {
     if (process.platform === 'darwin') {
       const script = `
         tell application "System Events"
-          set sonyProcs to (every process whose name is "Remote" or name contains "Imaging Edge" or name is "Sony Remote")
-          if (count of sonyProcs) > 0 then
-            set targetProc to item 1 of sonyProcs
+          set cameraProcs to (every process whose name is "Remote" or name contains "Imaging Edge" or name is "Sony Remote" or name contains "EOS Utility" or name is "EOS Utility" or name is "EOS Utility 3" or name is "EOS Utility 2" or name contains "Camera Control Pro" or name is "X Acquire")
+          if (count of cameraProcs) > 0 then
+            set targetProc to item 1 of cameraProcs
             set frontmost of targetProc to true
             delay 0.05
             key code 49
@@ -411,7 +425,7 @@ ipcMain.handle('hot-folder-wait-photo', async (event, options = {}) => {
     } else if (process.platform === 'win32') {
       const ps = `
         Add-Type -AssemblyName System.Windows.Forms
-        $p = Get-Process -Name "Remote" -ErrorAction SilentlyContinue
+        $p = Get-Process | Where-Object { $_.Name -match "^(Remote|EOS Utility|EOS3|CameraControl|XAcquire)" } | Select-Object -First 1
         if ($p) {
           [Microsoft.VisualBasic.Interaction]::AppActivate($p.Id)
           Start-Sleep -Milliseconds 60

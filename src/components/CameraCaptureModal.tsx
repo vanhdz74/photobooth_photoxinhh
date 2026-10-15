@@ -297,6 +297,8 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
         photoData = await cameraService.captureFromHotFolder();
       } catch (hotErr: any) {
         if (videoRef.current && (videoRef.current.videoWidth > 0 || videoRef.current.srcObject)) {
+          console.warn('[Hot Folder Fallback] Failed to get high-res photo from camera folder:', hotErr);
+          setCaptureError('⚠️ Không nhận được ảnh gốc từ Canon/Sony Hot Folder (Hết thời gian chờ). Đang chụp tạm từ LiveView nên ảnh có thể bị mờ!');
           photoData = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox, zoomLevel);
         } else {
           throw hotErr;
@@ -1229,12 +1231,12 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
         {showHotFolderSettings && (
           <div
             onClick={(e) => e.stopPropagation()}
-            className="absolute top-16 inset-x-4 max-w-md mx-auto z-50 bg-gray-900/95 backdrop-blur-md border border-gray-700 p-5 rounded-3xl shadow-2xl flex flex-col gap-3"
+            className="absolute top-16 inset-x-4 max-w-lg mx-auto z-50 bg-gray-900/95 backdrop-blur-md border border-gray-700 p-5 rounded-3xl shadow-2xl flex flex-col gap-3.5 animate-in fade-in zoom-in-95 duration-150"
           >
             <div className="flex items-center justify-between border-b border-gray-800 pb-2">
               <h4 className="font-bold text-sm text-white flex items-center gap-2">
                 <Folder className="w-4 h-4 text-pink-400" />
-                <span>Cài Đặt Hot Folder (Sony Imaging Edge)</span>
+                <span>Cài Đặt Hot Folder (Canon EOS Utility / Sony Remote)</span>
               </h4>
               <button
                 type="button"
@@ -1244,8 +1246,33 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
                 <X className="w-4 h-4" />
               </button>
             </div>
+
+            {/* Status indicator: Camera App Detected or Not */}
+            <div className="flex items-center justify-between text-xs px-3 py-2 rounded-xl bg-gray-800/80 border border-gray-700">
+              <span className="text-gray-300 font-medium">Trạng thái phần mềm máy ảnh:</span>
+              {hotFolderStatus.cameraAppRunning ? (
+                <span className="text-emerald-400 font-bold flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>{hotFolderStatus.cameraAppName || 'Đã sẵn sàng'}</span>
+                </span>
+              ) : (
+                <span className="text-amber-400 font-semibold flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-amber-400" />
+                  <span>Chưa mở EOS Utility / Sony Remote</span>
+                </span>
+              )}
+            </div>
+
+            {/* Folder selection */}
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs text-gray-300">Thư mục nhận ảnh từ Sony Remote:</label>
+              <label className="text-xs text-gray-300 flex items-center justify-between">
+                <span>Thư mục nhận ảnh từ Canon / Sony (Hot Folder):</span>
+                {hotFolderStatus.isServerBridge && (
+                  <span className="text-[10px] text-teal-400 bg-teal-950/60 border border-teal-500/30 px-1.5 py-0.5 rounded-md">
+                    Máy tính {hotFolderStatus.serverPlatform === 'darwin' ? 'Mac' : 'Windows'}
+                  </span>
+                )}
+              </label>
               <div className="flex gap-2">
                 <input
                   type="text"
@@ -1261,40 +1288,87 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
                     const sel = await hotFolderService.selectFolder();
                     if (sel) setHotFolderFeedback(`✅ Đã chọn thư mục: ${sel}`);
                   }}
-                  className="px-3 py-1.5 bg-pink-600 hover:bg-pink-500 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                  className="px-3 py-1.5 bg-pink-600 hover:bg-pink-500 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer shrink-0"
                 >
                   <FolderOpen className="w-3.5 h-3.5" />
-                  <span>Chọn</span>
+                  <span>Chọn Thư Mục</span>
                 </button>
               </div>
             </div>
+
+            {/* LiveView source selector for Hot Folder mode */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs text-gray-300">Nguồn hình ảnh LiveView soi dáng (cho khách ngắm trước):</label>
+              <select
+                value={hotFolderStatus.liveviewDeviceId || ''}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  hotFolderService.setLiveviewDeviceId(val);
+                  cameraService.startStream('hot-folder-camera').then((stream) => {
+                    streamRef.current = stream;
+                    if (videoRef.current && stream) {
+                      videoRef.current.srcObject = stream;
+                      videoRef.current.play().catch(() => {});
+                    }
+                  });
+                }}
+                className="bg-gray-800 border border-gray-700 text-white text-xs rounded-xl px-3 py-1.5 outline-none font-semibold"
+              >
+                <option value="">Tự động (Camera iPad / Webcam mặc định)</option>
+                {devices
+                  .filter((d) => d.deviceId !== 'hot-folder-camera' && d.deviceId !== 'sony-wifi-camera' && d.deviceId !== 'mock-camera')
+                  .map((d) => (
+                    <option key={d.deviceId} value={d.deviceId}>
+                      {d.label}
+                    </option>
+                  ))}
+              </select>
+            </div>
+
+            {/* Test Trigger Button */}
             <div className="flex gap-2 pt-2 border-t border-gray-800">
               <button
                 type="button"
                 disabled={isTestingShutter}
                 onClick={async () => {
                   setIsTestingShutter(true);
-                  setHotFolderFeedback('📸 Đang gửi lệnh chụp...');
+                  setHotFolderFeedback('📸 Đang gửi lệnh chụp sang máy tính...');
                   try {
                     const trig = await hotFolderService.triggerShutter();
-                    setHotFolderFeedback(trig.warning ? `⚠️ ${trig.warning}` : '✅ Đã gửi lệnh chụp thành công!');
+                    if (trig.appName) {
+                      setHotFolderFeedback(`✅ Đã gửi lệnh chụp thành công tới: ${trig.appName}! Máy ảnh sẽ kêu "TÁCH".`);
+                    } else if (trig.warning) {
+                      setHotFolderFeedback(`⚠️ ${trig.warning}`);
+                    } else if (trig.success) {
+                      setHotFolderFeedback('✅ Đã gửi lệnh chụp thành công! Hãy kiểm tra tiếng màn trập.');
+                    } else {
+                      setHotFolderFeedback(`⚠️ ${trig.error || 'Chưa kích được màn trập'}`);
+                    }
                   } catch (e: any) {
                     setHotFolderFeedback(`Lỗi: ${e.message}`);
                   } finally {
                     setIsTestingShutter(false);
                   }
                 }}
-                className="flex-1 py-1.5 px-3 bg-gray-800 hover:bg-gray-700 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border border-gray-700 cursor-pointer"
+                className="flex-1 py-2 px-3 bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-500 hover:to-rose-500 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-md cursor-pointer transition-all active:scale-98"
               >
-                <Camera className="w-3.5 h-3.5 text-pink-400" />
-                <span>{isTestingShutter ? 'Đang gửi...' : 'Test Bấm Chụp Sony'}</span>
+                <Camera className="w-4 h-4 text-white" />
+                <span>{isTestingShutter ? 'Đang gửi lệnh...' : 'Test Bấm Chụp Canon / Sony (Kêu Tách)'}</span>
               </button>
             </div>
+
             {hotFolderFeedback && (
-              <div className="text-xs text-pink-300 bg-pink-950/60 border border-pink-500/30 p-2 rounded-xl">
+              <div className="text-xs text-pink-300 bg-pink-950/60 border border-pink-500/30 p-2.5 rounded-xl">
                 {hotFolderFeedback}
               </div>
             )}
+
+            <div className="text-[11px] text-gray-400 bg-black/40 p-2 rounded-xl border border-white/5 space-y-1">
+              <p className="font-semibold text-gray-300">💡 Cách hoạt động chuẩn Studio Photobooth:</p>
+              <p>1. Cắm máy ảnh Canon/Sony vào máy tính qua dây cáp USB và mở phần mềm <strong>Canon EOS Utility</strong> hoặc <strong>Sony Imaging Edge Remote</strong>.</p>
+              <p>2. Đặt thư mục lưu ảnh của Canon/Sony trùng với thư mục ở trên.</p>
+              <p>3. Khách đứng trước iPad ngắm dáng qua LiveView. Khi hết đếm ngược 3s, máy ảnh trên tripod sẽ <strong>kêu "TÁCH" cơ học</strong> và nạp file ảnh <strong>gốc siêu nét 24MP</strong> vào dải ảnh!</p>
+            </div>
           </div>
         )}
 

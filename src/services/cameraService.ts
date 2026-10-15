@@ -109,10 +109,10 @@ export class CameraService {
       }
     }
 
-    // Hot Folder (Sony Imaging Edge Desktop Remote Tethering)
+    // Hot Folder (Canon EOS Utility / Sony Imaging Edge Tethering)
     list.push({
       deviceId: 'hot-folder-camera',
-      label: '📁 [Hot Folder] Máy ảnh Sony qua Imaging Edge Remote (Ảnh gốc High-Res)',
+      label: '📁 [Hot Folder] Máy ảnh Canon / Sony qua EOS Utility & Imaging Edge (Ảnh gốc High-Res)',
     });
 
     // Wireless / Wi-Fi & Network options
@@ -152,61 +152,84 @@ export class CameraService {
 
     try {
       let stream: MediaStream | null = null;
-      const resConstraints = {
+      // High-resolution request for crisp HDMI capture card & webcams (forces 1080p/720p)
+      const highRes = {
+        width: { ideal: 1920, min: 1280 },
+        height: { ideal: 1080, min: 720 },
+      };
+      const standardRes = {
         width: { ideal: 1920 },
         height: { ideal: 1080 },
       };
 
       if (actualStreamId && actualStreamId !== 'default') {
         try {
-          // 1. Try with exact deviceId & ideal 1080p
+          // 1. Try with exact deviceId & HD constraints
           stream = await navigator.mediaDevices.getUserMedia({
             video: {
               deviceId: { exact: actualStreamId },
-              ...resConstraints,
+              ...highRes,
             },
             audio: false,
           });
-        } catch (e1) {
+        } catch {
           try {
-            // 2. Try with loose deviceId constraint & ideal 1080p
+            // 2. Try with exact deviceId & standard 1080p ideal
             stream = await navigator.mediaDevices.getUserMedia({
               video: {
-                deviceId: actualStreamId,
-                ...resConstraints,
+                deviceId: { exact: actualStreamId },
+                ...standardRes,
               },
               audio: false,
             });
-          } catch (e2) {
+          } catch {
             try {
-              // 3. Try with ideal deviceId constraint
+              // 3. Try with loose deviceId constraint
               stream = await navigator.mediaDevices.getUserMedia({
                 video: {
-                  deviceId: { ideal: actualStreamId },
-                  ...resConstraints,
+                  deviceId: actualStreamId,
+                  ...standardRes,
                 },
                 audio: false,
               });
-            } catch (e3) {
-              // 4. Fallback to general camera stream with 1080p
-              stream = await navigator.mediaDevices.getUserMedia({
-                video: { ...resConstraints },
-                audio: false,
-              });
+            } catch {
+              try {
+                // 4. Try with ideal deviceId constraint
+                stream = await navigator.mediaDevices.getUserMedia({
+                  video: {
+                    deviceId: { ideal: actualStreamId },
+                    ...standardRes,
+                  },
+                  audio: false,
+                });
+              } catch {
+                // 5. Fallback to general camera stream
+                stream = await navigator.mediaDevices.getUserMedia({
+                  video: { ...standardRes },
+                  audio: false,
+                });
+              }
             }
           }
         }
       } else {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { ...resConstraints },
-          audio: false,
-        });
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { ...highRes },
+            audio: false,
+          });
+        } catch {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { ...standardRes },
+            audio: false,
+          });
+        }
       }
 
       this.currentStream = stream;
       return this.currentStream;
     } catch (err) {
-      console.warn('Cannot access real camera stream with 1080p, falling back to default:', err);
+      console.warn('Cannot access real camera stream with HD constraints, falling back to basic video:', err);
       try {
         const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
         this.currentStream = fallbackStream;
