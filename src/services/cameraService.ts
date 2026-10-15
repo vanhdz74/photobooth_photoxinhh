@@ -109,6 +109,12 @@ export class CameraService {
       }
     }
 
+    // Sony Multi-Terminal Connection
+    list.push({
+      deviceId: 'sony-multi-camera',
+      label: '🔌 [Cổng Multi Sony] Cáp Multi-Terminal & Cò Bấm (Ảnh Gốc Thẻ Nhớ)',
+    });
+
     // Hot Folder (Canon EOS Utility / Sony Imaging Edge Tethering)
     list.push({
       deviceId: 'hot-folder-camera',
@@ -139,9 +145,13 @@ export class CameraService {
       return null; // Signals to use mock rendering, Phone P2P, or Sony LiveView stream
     }
 
-    // For hot-folder-camera: Try to start liveview from configured stream (Webcam, Imaging Edge Webcam, HDMI Capture)
+    // For sony-multi-camera: Use USB video capture stream or default to front/back camera for live posing
     let actualStreamId = deviceId;
-    if (deviceId === 'hot-folder-camera') {
+    if (deviceId === 'sony-multi-camera') {
+      const devs = await this.getAvailableDevices(false);
+      const usbDev = this.findFirstUsbDevice(devs);
+      actualStreamId = usbDev ? usbDev.deviceId : 'default';
+    } else if (deviceId === 'hot-folder-camera') {
       const liveviewPref = hotFolderService.getLiveviewDeviceId();
       if (liveviewPref && liveviewPref !== 'hot-folder-camera' && liveviewPref !== 'none') {
         actualStreamId = liveviewPref;

@@ -29,6 +29,7 @@ import { bluetoothService } from '../services/bluetoothService';
 import { realP2PService } from '../services/realP2PService';
 import { sonyCameraService, SonyCameraInfo } from '../services/sonyCameraService';
 import { hotFolderService, HotFolderStatus } from '../services/hotFolderService';
+import { sonyMultiService, SonyMultiStatus } from '../services/sonyMultiService';
 import { sounds } from '../utils/audio';
 import { safeGetItem, safeSetItem } from '../utils/safeStorage';
 
@@ -75,6 +76,9 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
   const [isTestingShutter, setIsTestingShutter] = useState(false);
   const [hotFolderFeedback, setHotFolderFeedback] = useState<string | null>(null);
   const [showHotFolderSettings, setShowHotFolderSettings] = useState(false);
+  const [showSonyMultiSettings, setShowSonyMultiSettings] = useState(false);
+  const [sonyMultiStatus, setSonyMultiStatus] = useState<SonyMultiStatus>(sonyMultiService.getStatus());
+  const [sonyMultiFeedback, setSonyMultiFeedback] = useState<string | null>(null);
 
   const [capturedPhotos, setCapturedPhotos] = useState<string[]>([]);
   const [previewPhotoIndex, setPreviewPhotoIndex] = useState<number | null>(null); // Enlarged Photo Inspector
@@ -210,6 +214,13 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
     };
   }, [isOpen]);
 
+  // Subscribe to Sony Multi Terminal Status
+  useEffect(() => {
+    if (!isOpen) return;
+    const unsub = sonyMultiService.onStatusChange((st) => setSonyMultiStatus(st));
+    return () => unsub();
+  }, [isOpen]);
+
   // Subscribe to Sony Camera Frame & Status
   useEffect(() => {
     if (!isOpen) return;
@@ -308,6 +319,14 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
       }
     } else if (selectedDevice === 'sony-wifi-camera') {
       photoData = await cameraService.captureFromSonyCamera();
+    } else if (selectedDevice === 'sony-multi-camera') {
+      let rawPhoto = '';
+      if (videoRef.current && (videoRef.current.videoWidth > 0 || videoRef.current.srcObject)) {
+        rawPhoto = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox, zoomLevel);
+      } else {
+        rawPhoto = await cameraService.captureFromPhoneStream();
+      }
+      photoData = await sonyMultiService.enhanceImageSharpness(rawPhoto);
     } else if (selectedDevice === 'phone-live-camera') {
       if (videoRef.current && (videoRef.current.videoWidth > 0 || videoRef.current.srcObject)) {
         photoData = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox, zoomLevel);
@@ -1372,6 +1391,121 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
           </div>
         )}
 
+        {/* 8.1 SONY MULTI-TERMINAL SETTINGS MODAL */}
+        {showSonyMultiSettings && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="absolute top-14 inset-x-4 max-w-lg mx-auto z-50 bg-gray-900/95 backdrop-blur-md border border-amber-500/40 p-5 rounded-3xl shadow-2xl flex flex-col gap-3.5 animate-in fade-in zoom-in-95 duration-150 max-h-[85vh] overflow-y-auto"
+          >
+            <div className="flex items-center justify-between border-b border-gray-800 pb-2">
+              <h4 className="font-bold text-sm text-white flex items-center gap-2">
+                <Usb className="w-4 h-4 text-amber-400" />
+                <span>Cài Đặt Cổng Multi Sony (Multi-Terminal)</span>
+              </h4>
+              <button
+                type="button"
+                onClick={() => setShowSonyMultiSettings(false)}
+                className="p-1 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Hardware Status */}
+            <div className="flex items-center justify-between text-xs px-3 py-2 rounded-xl bg-gray-800/80 border border-gray-700">
+              <span className="text-gray-300 font-medium">Kết nối Cổng Multi trên iPad:</span>
+              <div className="flex items-center gap-2">
+                <span className={`font-bold flex items-center gap-1.5 ${sonyMultiStatus.isUsbConnected ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  <span className={`w-2 h-2 rounded-full ${sonyMultiStatus.isUsbConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                  <span>{sonyMultiStatus.connectedDeviceName || (sonyMultiStatus.isUsbConnected ? 'Đã cắm cổng Type-C' : 'Chưa nhận diện')}</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const ok = sonyMultiService.checkNativeUsbDevices();
+                    if (!ok) {
+                      setSonyMultiFeedback('Đang quét thiết bị USB trên trình duyệt...');
+                      cameraService.requestPermissionAndGetDevices().then((devs) => {
+                        setDevices(devs);
+                        setSonyMultiFeedback(`Đã quét xong: tìm thấy ${devs.length} nguồn camera.`);
+                      });
+                    } else {
+                      setSonyMultiFeedback('⚡️ Đang quét cổng phần cứng qua iPad native AVFoundation...');
+                    }
+                  }}
+                  className="px-2 py-0.5 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-[10px] font-bold cursor-pointer"
+                >
+                  Quét Lại
+                </button>
+              </div>
+            </div>
+
+            {/* Mode Selector */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs text-gray-300 font-semibold">Chế độ chụp với Cổng Multi:</label>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <button
+                  type="button"
+                  onClick={() => sonyMultiService.setMode('shutter_remote')}
+                  className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                    sonyMultiStatus.mode === 'shutter_remote'
+                      ? 'bg-amber-500/20 border-amber-400 text-white shadow-md ring-1 ring-amber-400'
+                      : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
+                  }`}
+                >
+                  <p className="font-bold text-amber-300">1. Cò Bấm Cổng Multi</p>
+                  <p className="text-[10px] text-gray-400 mt-0.5">Khách cầm cò bấm tay bấm "TÁCH", lưu ảnh thẻ nhớ</p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => sonyMultiService.setMode('uvc_hd')}
+                  className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                    sonyMultiStatus.mode === 'uvc_hd'
+                      ? 'bg-amber-500/20 border-amber-400 text-white shadow-md ring-1 ring-amber-400'
+                      : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
+                  }`}
+                >
+                  <p className="font-bold text-amber-300">2. Cáp Multi Xuất LiveView</p>
+                  <p className="text-[10px] text-gray-400 mt-0.5">Xuất hình ảnh soi gương & chụp tự động</p>
+                </button>
+              </div>
+            </div>
+
+            {/* Step-by-Step Guide for Sony Menu */}
+            <div className="space-y-2 bg-black/40 p-3 rounded-2xl border border-white/10 text-xs">
+              <p className="font-bold text-amber-400 flex items-center gap-1.5">
+                <span>⚙️ Hướng dẫn cài đặt Menu máy ảnh Sony:</span>
+              </p>
+              <div className="space-y-1.5 text-gray-300 text-[11px] leading-relaxed">
+                <div className="flex gap-2">
+                  <span className="font-bold text-amber-300 shrink-0">1. Cắm cáp:</span>
+                  <span>Cắm đầu Micro-USB vào cổng <strong>MULTI</strong> bên hông máy ảnh Sony. Đầu còn lại cắm vào cổng Type-C của iPad.</span>
+                </div>
+                <div className="flex gap-2">
+                  <span className="font-bold text-amber-300 shrink-0">2. Cài đặt USB:</span>
+                  <span>Menu máy ảnh (hình chiếc va-li 🧰) &gt; <strong>USB Connection</strong> &gt; Chọn <strong>PC Remote</strong> (hoặc Auto / Mass Storage).</span>
+                </div>
+                <div className="flex gap-2">
+                  <span className="font-bold text-amber-300 shrink-0">3. Tắt sạc ngược:</span>
+                  <span>Menu &gt; <strong>USB Power Supply</strong> &gt; Chọn <strong>Off</strong> (để tránh iPad bị sụt pin sạc cho máy ảnh).</span>
+                </div>
+                <div className="flex gap-2">
+                  <span className="font-bold text-amber-300 shrink-0">4. Kêu TÁCH cơ học:</span>
+                  <span>Để máy ảnh đánh màn trập cơ học thật sự, bạn có thể cắm <strong>Dây bấm mềm / Remote không dây</strong> vào cổng Multi, khách bấm nút trên tay là máy chụp "TÁCH" và lưu ngay vào thẻ nhớ!</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Feedback message */}
+            {sonyMultiFeedback && (
+              <div className="text-xs text-amber-300 bg-amber-950/60 border border-amber-500/30 p-2.5 rounded-xl">
+                {sonyMultiFeedback}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* 9. USB SCAN FEEDBACK TOAST */}
         {usbFeedback && (
           <div
@@ -1593,6 +1727,18 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
               >
                 <Settings className="w-3 h-3" />
                 <span>IP Sony</span>
+              </button>
+            )}
+
+            {selectedDevice === 'sony-multi-camera' && (
+              <button
+                type="button"
+                onClick={() => setShowSonyMultiSettings(true)}
+                className="px-2 py-0.5 bg-gray-800 hover:bg-gray-700 text-amber-300 rounded-xl text-xs font-medium border border-gray-700 cursor-pointer flex items-center gap-1 shrink-0"
+                title="Cài đặt Cổng Multi Sony"
+              >
+                <Settings className="w-3 h-3" />
+                <span>Cổng Multi</span>
               </button>
             )}
 
