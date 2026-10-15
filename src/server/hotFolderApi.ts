@@ -41,54 +41,140 @@ export function isSupportedPhoto(filename: string): boolean {
 }
 
 /**
- * Triggers Shutter on macOS (AppleScript) or Windows (PowerShell)
- * Supports: Canon EOS Utility 3/2, Sony Imaging Edge Remote, Nikon Camera Control Pro, Fuji X Acquire
+ * Checks if gphoto2 CLI is available on the machine
  */
-export function executeShutterTrigger(): Promise<{ success: boolean; appName?: string; warning?: string; error?: string }> {
+export function checkGphoto2Installed(): Promise<boolean> {
+  return new Promise((resolve) => {
+    exec('which gphoto2 || where gphoto2', (err, stdout) => {
+      resolve(!err && !!(stdout || '').trim());
+    });
+  });
+}
+
+/**
+ * Detects connected camera via gphoto2 USB PTP
+ */
+export function detectGphoto2Camera(): Promise<string | null> {
+  return new Promise((resolve) => {
+    exec('gphoto2 --auto-detect', (err, stdout) => {
+      if (err || !stdout) return resolve(null);
+      const lines = stdout.trim().split('\n');
+      if (lines.length > 2) {
+        const devLine = lines.slice(2).find((l) => l.trim() && !l.includes('---'));
+        if (devLine) return resolve(devLine.trim());
+      }
+      resolve(null);
+    });
+  });
+}
+
+/**
+ * Checks if Canon/Sony tethering process is currently running via pgrep / tasklist
+ * Avoids macOS System Events permissions issues (-54)
+ */
+export function checkCameraAppRunning(): Promise<{ isRunning: boolean; appName?: string; appProcess?: string }> {
   return new Promise((resolve) => {
     if (process.platform === 'darwin') {
+      exec('pgrep -il -f "EOS Utility|Imaging Edge|Remote|Camera Control|X Acquire"', (err, stdout) => {
+        if (err || !stdout) return resolve({ isRunning: false });
+
+        const lines = stdout.split('\n');
+        for (const line of lines) {
+          const l = line.toLowerCase();
+          if (l.includes('mediaremote') || l.includes('remoted') || l.includes('helper') || l.includes('antigravity')) {
+            continue;
+          }
+          if (l.includes('eos utility') || l.includes('eos3') || l.includes('eosutility')) {
+            return resolve({ isRunning: true, appName: 'Canon EOS Utility', appProcess: 'EOS Utility' });
+          }
+          if (l.includes('imaging edge') || l.includes('/remote.app') || (l.includes('remote') && l.includes('sony'))) {
+            return resolve({ isRunning: true, appName: 'Sony Imaging Edge Remote', appProcess: 'Remote' });
+          }
+          if (l.includes('camera control pro')) {
+            return resolve({ isRunning: true, appName: 'Nikon Camera Control Pro', appProcess: 'Camera Control Pro' });
+          }
+          if (l.includes('x acquire')) {
+            return resolve({ isRunning: true, appName: 'Fujifilm X Acquire', appProcess: 'X Acquire' });
+          }
+        }
+        resolve({ isRunning: false });
+      });
+    } else if (process.platform === 'win32') {
+      exec('tasklist', (err, stdout) => {
+        if (err) return resolve({ isRunning: false });
+        const list = stdout.toLowerCase();
+        if (list.includes('remote.exe')) resolve({ isRunning: true, appName: 'Sony Imaging Edge Remote', appProcess: 'Remote' });
+        else if (list.includes('eos utility') || list.includes('eos3.exe')) resolve({ isRunning: true, appName: 'Canon EOS Utility', appProcess: 'EOS Utility' });
+        else if (list.includes('cameracontrol.exe')) resolve({ isRunning: true, appName: 'Nikon Camera Control Pro', appProcess: 'CameraControl' });
+        else if (list.includes('xacquire.exe')) resolve({ isRunning: true, appName: 'Fujifilm X Acquire', appProcess: 'XAcquire' });
+        else resolve({ isRunning: false });
+      });
+    } else {
+      resolve({ isRunning: false });
+    }
+  });
+}
+
+/**
+ * Triggers Shutter on macOS (AppleScript) or Windows (PowerShell) or via gphoto2
+ */
+export async function executeShutterTrigger(): Promise<{ success: boolean; appName?: string; warning?: string; error?: string }> {
+  // 1. Check if gphoto2 is installed and has a camera connected
+  const hasGphoto = await checkGphoto2Installed();
+  if (hasGphoto) {
+    const cam = await detectGphoto2Camera();
+    if (cam) {
+      return new Promise((resolve) => {
+        exec('gphoto2 --trigger-capture', (err, _stdout, stderr) => {
+          if (err) {
+            console.warn('[gphoto2 trigger error]:', err.message, stderr);
+            resolve({ success: false, error: `gphoto2: ${stderr || err.message}` });
+          } else {
+            resolve({ success: true, appName: `USB Camera [gphoto2: ${cam}]` });
+          }
+        });
+      });
+    }
+  }
+
+  // 2. Check if Canon / Sony software is currently running
+  const cameraApp = await checkCameraAppRunning();
+
+  if (!cameraApp.isRunning) {
+    return {
+      success: false,
+      warning:
+        'Chưa tìm thấy phần mềm Canon EOS Utility hoặc Sony Remote đang chạy trên máy tính. Bạn hãy mở Canon/Sony lên (hoặc cắm máy ảnh trực tiếp vào máy tính và cài gphoto2)!',
+    };
+  }
+
+  // 3. Send spacebar trigger to the detected app
+  return new Promise((resolve) => {
+    if (process.platform === 'darwin') {
+      const procName = cameraApp.appProcess || 'Remote';
       const script = `
+        tell application "${procName}" to activate
+        delay 0.1
         tell application "System Events"
-          set cameraProcs to (every process whose name is "Remote" or name contains "Imaging Edge" or name is "Sony Remote" or name contains "EOS Utility" or name is "EOS Utility 3" or name is "EOS Utility 2" or name contains "Remote Shooting" or name contains "Camera Control Pro" or name is "X Acquire" or name contains "FUJIFILM")
-          if (count of cameraProcs) > 0 then
-            set targetProc to item 1 of cameraProcs
-            set targetName to name of targetProc
-            set frontmost of targetProc to true
-            delay 0.1
-            key code 49 -- Spacebar trigger shutter
-            return "OK:" & targetName
-          else
-            return "NOT_RUNNING"
-          end if
+          key code 49 -- Spacebar trigger shutter
         end tell
+        return "OK"
       `;
-      exec(`osascript -e '${script.replace(/'/g, "'\\''")}'`, (err, stdout, stderr) => {
+      exec(`osascript -e '${script.replace(/'/g, "'\\''")}'`, (err, _stdout, stderr) => {
         if (err) {
           console.warn('[Hot Folder Shutter] osascript error:', err.message, stderr);
-          // If permission error -1743 or -1728
-          if (err.message.includes('-1743') || err.message.includes('Not authorized') || err.message.includes('Quyền')) {
+          if (err.message.includes('-54') || err.message.includes('-1743') || err.message.includes('Quyền') || err.message.includes('Not authorized')) {
             resolve({
               success: false,
-              warning: 'macOS chưa cấp quyền Tự Động Hóa (Automation) cho Terminal/App điều khiển System Events. Bạn vui lòng vào Cài đặt hệ thống > Quyền riêng tư & bảo mật > Tự động hóa để bật quyền!',
+              warning:
+                'macOS yêu cầu cấp quyền Trợ Năng (Accessibility) cho Terminal / Node để gửi phím bấm Space. Vào Cài đặt hệ thống > Quyền riêng tư & bảo mật > Trợ năng > Bật quyền!',
             });
             return;
           }
           resolve({ success: false, error: err.message });
           return;
         }
-
-        const res = (stdout || '').trim();
-        if (res.startsWith('OK:')) {
-          const appName = res.replace('OK:', '').trim();
-          resolve({ success: true, appName });
-        } else if (res === 'NOT_RUNNING') {
-          resolve({
-            success: false,
-            warning: 'Chưa tìm thấy phần mềm Canon EOS Utility hoặc Sony Remote đang chạy trên máy tính. Bạn hãy mở Canon/Sony lên hoặc bấm chụp trực tiếp trên máy ảnh!',
-          });
-        } else {
-          resolve({ success: true, appName: 'Camera Tethering' });
-        }
+        resolve({ success: true, appName: cameraApp.appName });
       });
     } else if (process.platform === 'win32') {
       const ps = `
@@ -103,68 +189,12 @@ export function executeShutterTrigger(): Promise<{ success: boolean; appName?: s
           Write-Output "NOT_RUNNING"
         }
       `;
-      exec(`powershell -NoProfile -Command "${ps.replace(/"/g, '\\"')}"`, (err, stdout) => {
-        if (err) {
-          resolve({ success: false, error: err.message });
-          return;
-        }
-        const res = (stdout || '').trim();
-        if (res.startsWith('OK:')) {
-          const appName = res.replace('OK:', '').trim();
-          resolve({ success: true, appName });
-        } else if (res === 'NOT_RUNNING') {
-          resolve({
-            success: false,
-            warning: 'Phần mềm Canon EOS Utility hoặc Sony Remote chưa được mở trên Windows!',
-          });
-        } else {
-          resolve({ success: true });
-        }
+      exec(`powershell -NoProfile -Command "${ps.replace(/"/g, '\\"')}"`, (err, _stdout) => {
+        if (err) return resolve({ success: false, error: err.message });
+        resolve({ success: true, appName: cameraApp.appName });
       });
     } else {
-      resolve({ success: false, error: 'Chức năng tự kích chụp chưa hỗ trợ trên hệ điều hành này.' });
-    }
-  });
-}
-
-/**
- * Checks if Canon/Sony tethering process is currently running
- */
-export function checkCameraAppRunning(): Promise<{ isRunning: boolean; appName?: string }> {
-  return new Promise((resolve) => {
-    if (process.platform === 'darwin') {
-      const script = `
-        tell application "System Events"
-          set cameraProcs to (every process whose name is "Remote" or name contains "Imaging Edge" or name is "Sony Remote" or name contains "EOS Utility" or name is "EOS Utility 3" or name is "EOS Utility 2" or name contains "Remote Shooting" or name contains "Camera Control Pro" or name is "X Acquire" or name contains "FUJIFILM")
-          if (count of cameraProcs) > 0 then
-            return name of item 1 of cameraProcs
-          else
-            return "NOT_RUNNING"
-          end if
-        end tell
-      `;
-      exec(`osascript -e '${script.replace(/'/g, "'\\''")}'`, (err, stdout) => {
-        if (err) {
-          resolve({ isRunning: false });
-          return;
-        }
-        const res = (stdout || '').trim();
-        if (res && res !== 'NOT_RUNNING') {
-          resolve({ isRunning: true, appName: res });
-        } else {
-          resolve({ isRunning: false });
-        }
-      });
-    } else if (process.platform === 'win32') {
-      exec('tasklist', (err, stdout) => {
-        if (err) return resolve({ isRunning: false });
-        const list = stdout.toLowerCase();
-        if (list.includes('remote.exe')) resolve({ isRunning: true, appName: 'Sony Imaging Edge Remote' });
-        else if (list.includes('eos utility') || list.includes('eos3.exe')) resolve({ isRunning: true, appName: 'Canon EOS Utility' });
-        else resolve({ isRunning: false });
-      });
-    } else {
-      resolve({ isRunning: false });
+      resolve({ success: false, error: 'Chưa hỗ trợ hệ điều hành này.' });
     }
   });
 }
@@ -176,17 +206,14 @@ export function openHostFolderPicker(): Promise<string | null> {
   return new Promise((resolve) => {
     if (process.platform === 'darwin') {
       const script = `
-        tell application "System Events"
+        tell application "Finder"
           activate
           set chosenFolder to choose folder with prompt "Chọn thư mục nhận ảnh từ Canon EOS Utility / Sony Remote:"
           return POSIX path of chosenFolder
         end tell
       `;
       exec(`osascript -e '${script.replace(/'/g, "'\\''")}'`, (err, stdout) => {
-        if (err) {
-          resolve(null);
-          return;
-        }
+        if (err) return resolve(null);
         const p = (stdout || '').trim();
         resolve(p || null);
       });
@@ -211,7 +238,8 @@ export function openHostFolderPicker(): Promise<string | null> {
 }
 
 /**
- * Waits for a newly created or modified photo in the Hot Folder
+ * Waits for a newly created or modified photo in the Hot Folder,
+ * or captures directly via gphoto2 if supported
  */
 export async function waitForNewPhotoInFolder(
   folderPath: string,
@@ -224,6 +252,39 @@ export async function waitForNewPhotoInFolder(
     return { success: false, error: `Thư mục Hot Folder không tồn tại: ${targetDir}` };
   }
 
+  // 1. Direct gphoto2 capture if available
+  const hasGphoto = await checkGphoto2Installed();
+  if (hasGphoto) {
+    const cam = await detectGphoto2Camera();
+    if (cam) {
+      const timestamp = Date.now();
+      const fileName = `shot_${timestamp}.jpg`;
+      const filePath = path.join(targetDir, fileName);
+
+      return new Promise((resolve) => {
+        console.log(`[gphoto2] Direct USB PTP Shooting: ${cam} -> ${filePath}`);
+        exec(`gphoto2 --capture-image-and-download --filename "${filePath}" --force-overwrite`, async (err, _stdout, _stderr) => {
+          if (err) {
+            console.warn('[gphoto2 capture failed, fallback to folder poll]:', err.message);
+          } else if (fs.existsSync(filePath)) {
+            try {
+              const buffer = await fs.promises.readFile(filePath);
+              const dataUrl = `data:image/jpeg;base64,${buffer.toString('base64')}`;
+              return resolve({
+                success: true,
+                filePath,
+                fileName,
+                dataUrl,
+              });
+            } catch (e) {}
+          }
+          // Fallback to standard folder poll below
+        });
+      });
+    }
+  }
+
+  // 2. Standard Hot Folder Polling (Canon EOS Utility / Sony Remote)
   const startTime = Date.now();
   let existingFiles = new Set<string>();
   try {
@@ -255,7 +316,7 @@ export async function waitForNewPhotoInFolder(
         cleanup();
         resolve({
           success: false,
-          error: `Hết thời gian chờ (${Math.round(timeoutMs / 1000)}s): Chưa thấy file ảnh mới trong thư mục Hot Folder.`,
+          error: shutterWarning || `Hết thời gian chờ (${Math.round(timeoutMs / 1000)}s): Chưa thấy file ảnh mới trong thư mục Hot Folder.`,
           warning: shutterWarning,
         });
       }
@@ -270,10 +331,8 @@ export async function waitForNewPhotoInFolder(
           const fullPath = path.join(targetDir, fname);
           const stat = await fs.promises.stat(fullPath);
 
-          // If file is new or modified around/after startTime and size > 2KB
           if ((!existingFiles.has(fname) || stat.mtimeMs >= startTime - 800) && stat.size > 2000) {
             const initialSize = stat.size;
-            // Wait 250ms for camera software to complete file write
             await new Promise((r) => setTimeout(r, 250));
             const stat2 = await fs.promises.stat(fullPath);
 
@@ -376,6 +435,9 @@ export async function handleHotFolderApiRequest(
   // 1. GET /api/hot-folder/status
   if (pathname === '/api/hot-folder/status' && req.method === 'GET') {
     const cameraApp = await checkCameraAppRunning();
+    const gphotoInstalled = await checkGphoto2Installed();
+    const gphotoCamera = gphotoInstalled ? await detectGphoto2Camera() : null;
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(
       JSON.stringify({
@@ -386,6 +448,8 @@ export async function handleHotFolderApiRequest(
         autoShutterEnabled,
         cameraAppRunning: cameraApp.isRunning,
         cameraAppName: cameraApp.appName || null,
+        gphotoInstalled,
+        gphotoCamera,
         defaultFolder: getDefaultHotFolder(),
       })
     );
