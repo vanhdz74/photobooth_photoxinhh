@@ -155,6 +155,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
   const sonyImgRef = useRef<HTMLImageElement | null>(null);
   const isCancelledRef = useRef<boolean>(false);
   const fileUploadInputRef = useRef<HTMLInputElement>(null);
+  const sonySdCardInputRef = useRef<HTMLInputElement>(null);
 
   // Upload photos directly from device inside the camera modal
   const handleDeviceUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -176,6 +177,32 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
       sounds.playSuccessChime();
     }
     if (fileUploadInputRef.current) fileUploadInputRef.current.value = '';
+  };
+
+  // Import raw high-res photos from Sony SD Card (Mass Storage / DCIM folder)
+  const handleSdCardImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []).filter((f) => f.type.startsWith('image/'));
+    if (files.length === 0) return;
+
+    const readPromises = files.slice(0, requiredPhotos).map((file) => {
+      return new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (ev) => resolve((ev.target?.result as string) || '');
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(file);
+      });
+    });
+
+    const urls = (await Promise.all(readPromises)).filter(Boolean);
+    if (urls.length > 0) {
+      setCapturedPhotos((prev) => {
+        const merged = [...prev, ...urls].slice(0, requiredPhotos);
+        return merged;
+      });
+      if (soundEnabled) sounds.playSuccessChime();
+      setSonyMultiFeedback(`✅ Đã nạp thành công ${urls.length} ảnh gốc từ thẻ nhớ Sony!`);
+    }
+    if (sonySdCardInputRef.current) sonySdCardInputRef.current.value = '';
   };
 
   useEffect(() => {
@@ -320,13 +347,40 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
     } else if (selectedDevice === 'sony-wifi-camera') {
       photoData = await cameraService.captureFromSonyCamera();
     } else if (selectedDevice === 'sony-multi-camera') {
-      let rawPhoto = '';
-      if (videoRef.current && (videoRef.current.videoWidth > 0 || videoRef.current.srcObject)) {
-        rawPhoto = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox, zoomLevel);
-      } else {
-        rawPhoto = await cameraService.captureFromPhoneStream();
+      try {
+        // 1. Try to get real high-res shot from camera (via Sony Wi-Fi or Hot Folder, fast 2.5s timeout)
+        const realPhoto = await sonyMultiService.captureHighResPhoto(2500);
+        if (realPhoto) {
+          photoData = realPhoto;
+          setCaptureError(null);
+        } else {
+          // Attempt shutter trigger (Sony Wi-Fi actTakePicture or USB)
+          const trig = await sonyMultiService.triggerShutter();
+          if (trig.warning && !trig.success) {
+            setCaptureError(`⚠️ ${trig.warning}`);
+          }
+          let rawPhoto = '';
+          if (videoRef.current && (videoRef.current.videoWidth > 0 || videoRef.current.srcObject)) {
+            rawPhoto = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox, zoomLevel);
+          } else if (sonyLiveFrame) {
+            rawPhoto = sonyLiveFrame;
+          } else {
+            rawPhoto = await cameraService.getMockPhoto();
+          }
+          photoData = await sonyMultiService.enhanceImageSharpness(rawPhoto);
+        }
+      } catch (err: any) {
+        console.warn('Sony multi capture error, falling back:', err);
+        setCaptureError(err?.message || 'Lỗi chụp từ cổng Multi');
+        if (videoRef.current && (videoRef.current.videoWidth > 0 || videoRef.current.srcObject)) {
+          const rawPhoto = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox, zoomLevel);
+          photoData = await sonyMultiService.enhanceImageSharpness(rawPhoto);
+        } else if (sonyLiveFrame) {
+          photoData = sonyLiveFrame;
+        } else {
+          photoData = await cameraService.getMockPhoto();
+        }
       }
-      photoData = await sonyMultiService.enhanceImageSharpness(rawPhoto);
     } else if (selectedDevice === 'phone-live-camera') {
       if (videoRef.current && (videoRef.current.videoWidth > 0 || videoRef.current.srcObject)) {
         photoData = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox, zoomLevel);
@@ -406,7 +460,13 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
           return;
         }
       }
-    } else if (!isMock && selectedDevice !== 'hot-folder-camera' && !streamRef.current && !videoRef.current?.videoWidth) {
+    } else if (
+      !isMock &&
+      selectedDevice !== 'hot-folder-camera' &&
+      selectedDevice !== 'sony-multi-camera' &&
+      !streamRef.current &&
+      !videoRef.current?.videoWidth
+    ) {
       try {
         const stream = await cameraService.startStream(selectedDevice);
         if (!stream && !videoRef.current?.videoWidth) {
@@ -940,6 +1000,16 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
             className="hidden"
           />
 
+          {/* Hidden file input for Sony SD card photos */}
+          <input
+            ref={sonySdCardInputRef}
+            type="file"
+            multiple
+            accept="image/*"
+            onChange={handleSdCardImport}
+            className="hidden"
+          />
+
           {/* Big Close Button (Top-Right) */}
           <button
             type="button"
@@ -1052,30 +1122,54 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
               fitMode === 'contain' ? 'pt-14 pb-28 sm:pb-32 px-3' : 'p-0'
             }`}
           >
-            <video
-              ref={(el) => {
-                videoRef.current = el;
-                if (el && streamRef.current && el.srcObject !== streamRef.current) {
-                  el.srcObject = streamRef.current;
-                  el.play().catch(() => {});
-                }
-              }}
-              autoPlay
-              playsInline
-              muted
-              className={`w-full h-full max-h-full max-w-full ${
-                fitMode === 'cover' ? 'object-cover' : 'object-contain'
-              } transition-all duration-150 will-change-transform`}
-              style={{
-                transform: `scale(${isMirrored ? -zoomLevel : zoomLevel}, ${zoomLevel})`,
-                transformOrigin: 'center center',
-              }}
-            />
+            {/* If Sony Multi is selected AND Sony Wi-Fi LiveView is active, display the live Sony frame! */}
+            {selectedDevice === 'sony-multi-camera' && sonyLiveFrame ? (
+              <img
+                ref={sonyImgRef}
+                src={sonyLiveFrame}
+                alt="Sony Liveview Stream"
+                className={`w-full h-full max-h-full max-w-full ${
+                  fitMode === 'cover' ? 'object-cover' : 'object-contain'
+                } transition-all duration-150 will-change-transform`}
+                style={{
+                  transform: `scale(${isMirrored ? -zoomLevel : zoomLevel}, ${zoomLevel})`,
+                  transformOrigin: 'center center',
+                }}
+              />
+            ) : (
+              <video
+                ref={(el) => {
+                  videoRef.current = el;
+                  if (el && streamRef.current && el.srcObject !== streamRef.current) {
+                    el.srcObject = streamRef.current;
+                    el.play().catch(() => {});
+                  }
+                }}
+                autoPlay
+                playsInline
+                muted
+                className={`w-full h-full max-h-full max-w-full ${
+                  fitMode === 'cover' ? 'object-cover' : 'object-contain'
+                } transition-all duration-150 will-change-transform`}
+                style={{
+                  transform: `scale(${isMirrored ? -zoomLevel : zoomLevel}, ${zoomLevel})`,
+                  transformOrigin: 'center center',
+                }}
+              />
+            )}
 
             {/* Top Device Pill Status */}
             {(() => {
               const activeDev = devices.find((d) => d.deviceId === selectedDevice);
               if (!activeDev) return null;
+              if (selectedDevice === 'sony-multi-camera') {
+                return (
+                  <div className="absolute top-16 left-4 backdrop-blur-md text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-2 shadow-xl border border-amber-400/40 bg-amber-950/85">
+                    <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                    <span>🔌 Cổng Multi Sony {sonyLiveFrame ? '(LiveView Wi-Fi)' : activeDev.isUsb ? '(Capture Card HD)' : '(Cam Soi Gương)'}</span>
+                  </div>
+                );
+              }
               return (
                 <div
                   className={`absolute top-16 left-4 backdrop-blur-md text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-2 shadow-xl border border-white/20 ${
@@ -1103,6 +1197,71 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
                 <RefreshCw className="w-3.5 h-3.5 text-pink-400" />
                 <span>Đổi Cam ({devices.findIndex((d) => d.deviceId === selectedDevice) + 1}/{devices.length})</span>
               </button>
+            )}
+
+            {/* Floating Quick Action Bar for Sony Multi Terminal */}
+            {selectedDevice === 'sony-multi-camera' && !isShooting && (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="absolute top-25 inset-x-3 sm:inset-x-8 max-w-xl mx-auto z-20 bg-gray-950/90 backdrop-blur-md border border-amber-500/40 p-2.5 rounded-2xl shadow-2xl flex flex-col gap-1.5 animate-in fade-in slide-in-from-top-2"
+              >
+                <div className="flex items-center justify-between text-xs text-amber-300 font-bold">
+                  <div className="flex items-center gap-1.5">
+                    <Usb className="w-4 h-4 text-amber-400" />
+                    <span>Xuất hình & bấm chụp máy Sony:</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowSonyMultiSettings(true)}
+                    className="text-[10px] text-gray-300 hover:text-white bg-white/10 px-2 py-0.5 rounded-lg flex items-center gap-1 cursor-pointer"
+                  >
+                    <Settings className="w-3 h-3" />
+                    <span>Cài Đặt & Hướng Dẫn</span>
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-1.5 overflow-x-auto text-[11px] pt-0.5">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setSonyMultiFeedback('📡 Đang kết nối Wi-Fi máy ảnh Sony...');
+                      const res = await sonyCameraService.testConnection();
+                      if (res.success) {
+                        await sonyCameraService.startLiveview().catch(() => {});
+                        setSonyMultiFeedback('✅ Đã kết nối Wi-Fi Sony! LiveView & Màn trập TÁCH đã sẵn sàng.');
+                      } else {
+                        setShowSonySettings(true);
+                      }
+                    }}
+                    className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold flex items-center gap-1 shrink-0 cursor-pointer shadow-sm active:scale-95"
+                    title="Bật kết nối Wi-Fi để xem hình trực tiếp và kích chụp màn trập cơ học TÁCH lưu thẻ nhớ"
+                  >
+                    <Wifi className="w-3.5 h-3.5" />
+                    <span>Bật Wi-Fi Sony (Xem Live & Kêu Tách)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleScanUsb}
+                    disabled={isScanningUsb}
+                    className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded-xl font-bold flex items-center gap-1 shrink-0 cursor-pointer shadow-sm active:scale-95"
+                    title="Quét tìm thiết bị HDMI Capture Card cắm qua cổng Type-C"
+                  >
+                    <Usb className="w-3.5 h-3.5" />
+                    <span>{isScanningUsb ? 'Đang quét...' : 'Quét HDMI Capture Card'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => sonySdCardInputRef.current?.click()}
+                    className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold flex items-center gap-1 shrink-0 cursor-pointer shadow-sm active:scale-95"
+                    title="Chọn ảnh gốc trực tiếp từ thẻ nhớ máy ảnh Sony (thư mục DCIM)"
+                  >
+                    <FolderOpen className="w-3.5 h-3.5" />
+                    <span>Chọn Ảnh Thẻ SD</span>
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         ) : (
@@ -1472,29 +1631,86 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
               </div>
             </div>
 
-            {/* Step-by-Step Guide for Sony Menu */}
-            <div className="space-y-2 bg-black/40 p-3 rounded-2xl border border-white/10 text-xs">
-              <p className="font-bold text-amber-400 flex items-center gap-1.5">
-                <span>⚙️ Hướng dẫn cài đặt Menu máy ảnh Sony:</span>
+            {/* Solutions Overview Guide */}
+            <div className="space-y-2.5 bg-black/50 p-3.5 rounded-2xl border border-white/10 text-xs">
+              <p className="font-bold text-amber-400 flex items-center gap-1.5 text-sm">
+                <span>💡 2 Cách Xuất Hình & Chụp Máy Ảnh Sony Lên iPad:</span>
               </p>
-              <div className="space-y-1.5 text-gray-300 text-[11px] leading-relaxed">
-                <div className="flex gap-2">
-                  <span className="font-bold text-amber-300 shrink-0">1. Cắm cáp:</span>
-                  <span>Cắm đầu Micro-USB vào cổng <strong>MULTI</strong> bên hông máy ảnh Sony. Đầu còn lại cắm vào cổng Type-C của iPad.</span>
+              
+              <div className="space-y-2 text-gray-300 text-[11px] leading-relaxed">
+                <div className="bg-emerald-950/40 border border-emerald-500/30 p-2.5 rounded-xl space-y-1">
+                  <p className="font-bold text-emerald-300">✅ Cách 1: Xuất Hình Siêu Nét 1080p bằng Cáp HDMI + Cò Bấm Multi (Khuyên Dùng)</p>
+                  <p>• Cắm cáp <strong>Micro-HDMI</strong> từ máy ảnh Sony vào <strong>HDMI Capture Card Type-C</strong> cắm vào iPad. iPad sẽ hiển thị hình ảnh 1080p sắc nét từ cảm biến Sony!</p>
+                  <p>• Cổng <strong>MULTI</strong> dùng để cắm <strong>Dây bấm mềm / Cò bấm tay</strong> cho khách bấm chụp "TÁCH" và lưu thẻ nhớ.</p>
                 </div>
-                <div className="flex gap-2">
-                  <span className="font-bold text-amber-300 shrink-0">2. Cài đặt USB:</span>
-                  <span>Menu máy ảnh (hình chiếc va-li 🧰) &gt; <strong>USB Connection</strong> &gt; Chọn <strong>PC Remote</strong> (hoặc Auto / Mass Storage).</span>
+
+                <div className="bg-indigo-950/40 border border-indigo-500/30 p-2.5 rounded-xl space-y-1">
+                  <p className="font-bold text-indigo-300">📡 Cách 2: Kết Nối Wi-Fi Không Dây (Không Cần Mua Thêm Dây)</p>
+                  <p>• Vào Menu máy ảnh Sony &gt; Ứng dụng &gt; <strong>"Điều khiển thông minh tích hợp"</strong> (Smart Remote Control).</p>
+                  <p>• Kết nối iPad vào Wi-Fi máy ảnh. App sẽ tự xuất LiveView không dây, bấm chụp màn trập cơ học "TÁCH", chớp flash và nạp ảnh 24MP vào dải ảnh!</p>
                 </div>
-                <div className="flex gap-2">
-                  <span className="font-bold text-amber-300 shrink-0">3. Tắt sạc ngược:</span>
-                  <span>Menu &gt; <strong>USB Power Supply</strong> &gt; Chọn <strong>Off</strong> (để tránh iPad bị sụt pin sạc cho máy ảnh).</span>
-                </div>
-                <div className="flex gap-2">
-                  <span className="font-bold text-amber-300 shrink-0">4. Kêu TÁCH cơ học:</span>
-                  <span>Để máy ảnh đánh màn trập cơ học thật sự, bạn có thể cắm <strong>Dây bấm mềm / Remote không dây</strong> vào cổng Multi, khách bấm nút trên tay là máy chụp "TÁCH" và lưu ngay vào thẻ nhớ!</span>
+
+                <div className="bg-gray-800/60 p-2.5 rounded-xl space-y-1 text-gray-300">
+                  <p className="font-bold text-amber-300">⚙️ Cài đặt Menu máy ảnh Sony (khi cắm cáp Multi USB):</p>
+                  <p>1. Menu (hình va-li 🧰) &gt; <strong>USB Connection</strong> &gt; Chọn <strong>PC Remote</strong> (hoặc Mass Storage).</p>
+                  <p>2. Menu &gt; <strong>USB Power Supply</strong> &gt; Chọn <strong>Off</strong> (để máy ảnh không rút pin sạc từ iPad).</p>
                 </div>
               </div>
+            </div>
+
+            {/* Action Buttons Row */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 border-t border-gray-800">
+              <button
+                type="button"
+                disabled={isTestingShutter}
+                onClick={async () => {
+                  setIsTestingShutter(true);
+                  setSonyMultiFeedback('📸 Đang gửi lệnh kích màn trập máy ảnh...');
+                  try {
+                    const res = await sonyMultiService.triggerShutter();
+                    if (res.success) {
+                      setSonyMultiFeedback(`✅ Đã gửi lệnh thành công: ${res.appName || 'Máy ảnh sẽ kêu TÁCH'}`);
+                    } else {
+                      setSonyMultiFeedback(`⚠️ ${res.warning || res.error || 'Chưa kích được màn trập'}`);
+                    }
+                  } catch (e: any) {
+                    setSonyMultiFeedback(`Lỗi: ${e.message}`);
+                  } finally {
+                    setIsTestingShutter(false);
+                  }
+                }}
+                className="py-2 px-3 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-md cursor-pointer transition-all active:scale-98"
+              >
+                <Camera className="w-4 h-4 text-white" />
+                <span>{isTestingShutter ? 'Đang gửi...' : 'Test Bấm Chụp (Kêu Tách)'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={async () => {
+                  setSonyMultiFeedback('📡 Đang kết nối Wi-Fi máy ảnh Sony...');
+                  const res = await sonyCameraService.testConnection();
+                  if (res.success) {
+                    await sonyCameraService.startLiveview().catch(() => {});
+                    setSonyMultiFeedback('✅ Đã kết nối Wi-Fi Sony! LiveView & Màn trập TÁCH đã sẵn sàng.');
+                  } else {
+                    setShowSonySettings(true);
+                  }
+                }}
+                className="py-2 px-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-md cursor-pointer transition-all active:scale-98"
+              >
+                <Wifi className="w-4 h-4 text-white" />
+                <span>Bật Wi-Fi Máy Sony</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => sonySdCardInputRef.current?.click()}
+                className="py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-md cursor-pointer transition-all active:scale-98"
+              >
+                <FolderOpen className="w-4 h-4 text-white" />
+                <span>Chọn Ảnh Thẻ Nhớ SD</span>
+              </button>
             </div>
 
             {/* Feedback message */}

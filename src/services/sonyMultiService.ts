@@ -6,7 +6,11 @@
  * 2. Hardware Wired & Wireless Shutter Remote (cò bấm tay cầm)
  * 3. iPadOS Native USB Discovery & UVC Stream
  * 4. SD Card DCIM Auto/Manual Import over USB Multi cable
+ * 5. Shutter Trigger via USB Tethering & Sony Remote API
  */
+
+import { hotFolderService } from './hotFolderService';
+import { sonyCameraService } from './sonyCameraService';
 
 export interface SonyMultiStatus {
   isUsbConnected: boolean;
@@ -112,27 +116,95 @@ export class SonyMultiService {
   }
 
   /**
-   * Guides user on setting up Sony camera Menu for Multi Terminal
+   * Guides user on setting up Sony camera Menu for Multi Terminal & HDMI
    */
   getMenuSetupSteps(): Array<{ title: string; desc: string }> {
     return [
       {
-        title: 'Bước 1: Cắm Cáp vào Cổng MULTI',
-        desc: 'Cắm đầu cáp Micro-USB Multi vào cổng có chữ "MULTI" bên hông máy ảnh Sony (cạnh cổng HDMI Micro). Đầu còn lại Type-C cắm vào iPad.',
+        title: 'Giải pháp 1: Xuất Hình Siêu Nét qua HDMI + Cò Bấm Multi (Khuyên Dùng)',
+        desc: 'Cắm cáp Micro-HDMI từ máy ảnh Sony vào cục HDMI Capture Card Type-C cắm vào iPad. iPad sẽ xuất ngay hình ảnh 1080p sắc nét từ cảm biến Sony! Cổng MULTI dùng để cắm Cò bấm tay (Dây bấm mềm) cho khách bấm chụp "TÁCH" và lưu thẻ nhớ.',
       },
       {
-        title: 'Bước 2: Cài đặt Menu trên Máy Ảnh Sony',
-        desc: 'Vào Menu (Cài đặt hình chiếc va-li 🧰) > USB Connection > Chọn "PC Remote" (để điều khiển) hoặc "Mass Storage" (để đọc thẻ nhớ).',
+        title: 'Giải pháp 2: Điều Khiển Không Dây qua Wi-Fi (Không Cần Thêm Cáp / Adapter)',
+        desc: 'Vào Menu máy ảnh Sony > Danh sách ứng dụng > "Điều khiển thông minh tích hợp" (Smart Remote Control). Kết nối iPad vào Wi-Fi máy ảnh. App sẽ tự xuất LiveView trực tiếp, bấm chụp màn trập cơ học "TÁCH", chớp flash và lưu ảnh 24MP vào thẻ SD!',
       },
       {
-        title: 'Bước 3: Tắt Cấp Nguồn USB (Tránh Tụt Pin iPad)',
-        desc: 'Vào Menu > USB Power Supply > Chọn "Off" (Tắt) để máy ảnh không rút pin từ iPad.',
+        title: 'Cài đặt Menu máy ảnh Sony (Khi Cắm Cáp Multi USB)',
+        desc: 'Vào Menu (hình va-li 🧰) > USB Connection > Chọn "PC Remote" (để kết nối máy tính) hoặc "Mass Storage" (để đọc thẻ nhớ). Vào USB Power Supply > Chọn "Off" để máy ảnh không rút pin iPad.',
       },
       {
-        title: 'Bước 4: Sử Dụng Cò Bấm Cổng Multi (Khuyên dùng)',
-        desc: 'Cắm dây bấm mềm hoặc remote không dây vào cổng Multi. Khách đứng trước iPad ngắm dáng và bấm cò trên tay, máy ảnh sẽ chớp đèn, đánh màn trập "TÁCH" và lưu ảnh gốc vào thẻ nhớ!',
+        title: 'Đọc ảnh trực tiếp từ Thẻ Nhớ SD máy ảnh (Mass Storage / DCIM)',
+        desc: 'Khi cắm cáp USB hoặc đầu đọc thẻ SD vào iPad, bạn có thể bấm nút "Chọn Ảnh Thẻ Nhớ SD" trong app để nạp trực tiếp toàn bộ ảnh gốc chất lượng cao từ thư mục DCIM của máy ảnh Sony.',
       },
     ];
+  }
+
+  /**
+   * Triggers the Sony camera shutter across all available channels:
+   * 1. Sony Wi-Fi Remote API (actTakePicture)
+   * 2. USB Host Bridge / gphoto2 / Tethering
+   */
+  async triggerShutter(): Promise<{ success: boolean; appName?: string; warning?: string; error?: string }> {
+    // 1. Try Sony Wi-Fi Remote API first (Fastest and direct on iPad)
+    if (sonyCameraService.isConnected()) {
+      try {
+        await sonyCameraService.sendJsonRpc('actTakePicture', [], '1.0', 5000);
+        this.lastMessage = '✅ Máy ảnh Sony đã bấm chụp "TÁCH" và lưu vào thẻ nhớ!';
+        this.notifyStatus();
+        return { success: true, appName: 'Sony Wi-Fi Remote (Màn trập cơ học)' };
+      } catch (e: any) {
+        if (e.message && e.message.includes('actTakePicture')) {
+          return { success: true, appName: 'Sony Camera Remote' };
+        }
+      }
+    }
+
+    // 2. Try USB Host Bridge / gphoto2 / Hot Folder
+    const hfStatus = hotFolderService.getStatus();
+    if (hfStatus.isWatching || hfStatus.isServerBridge) {
+      try {
+        const hfTrig = await hotFolderService.triggerShutter();
+        if (hfTrig.success) {
+          this.lastMessage = `✅ Đã kích chụp qua USB: ${hfTrig.appName || 'Sony Remote / gphoto2'}`;
+          this.notifyStatus();
+          return hfTrig;
+        }
+      } catch {}
+    }
+
+    return {
+      success: false,
+      warning:
+        'Chưa gửi được lệnh bấm chụp cơ học tới máy ảnh. Bạn có thể bật Wi-Fi "Điều khiển thông minh" trên máy ảnh Sony, cắm Dây bấm mềm vào cổng Multi, hoặc cắm cáp HDMI qua Capture Card để chụp!',
+    };
+  }
+
+  /**
+   * Attempts to capture a real high-res photo from Sony camera (non-blocking)
+   */
+  async captureHighResPhoto(timeoutMs = 3000): Promise<string | null> {
+    // 1. Try Sony Wi-Fi Remote API (Fast & Direct on iPad)
+    if (sonyCameraService.isConnected()) {
+      try {
+        const photo = await sonyCameraService.takePhoto();
+        if (photo) return photo;
+      } catch (e) {
+        console.warn('Sony Wi-Fi takePhoto failed:', e);
+      }
+    }
+
+    // 2. Try Hot Folder / USB Tethering ONLY if actively watching with folder path
+    const hfStatus = hotFolderService.getStatus();
+    if (hfStatus.isWatching && hfStatus.folderPath) {
+      try {
+        const photo = await hotFolderService.capturePhoto(timeoutMs);
+        if (photo) return photo;
+      } catch (e) {
+        console.warn('Hot folder capture attempt failed/timeout:', e);
+      }
+    }
+
+    return null;
   }
 
   /**

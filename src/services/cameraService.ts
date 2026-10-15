@@ -162,19 +162,19 @@ export class CameraService {
 
     try {
       let stream: MediaStream | null = null;
-      // High-resolution request for crisp HDMI capture card & webcams (forces 1080p/720p)
+      // High-resolution request for crisp HDMI capture card & webcams (without strict min that breaks iOS portrait)
       const highRes = {
-        width: { ideal: 1920, min: 1280 },
-        height: { ideal: 1080, min: 720 },
-      };
-      const standardRes = {
         width: { ideal: 1920 },
         height: { ideal: 1080 },
+      };
+      const standardRes = {
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
       };
 
       if (actualStreamId && actualStreamId !== 'default') {
         try {
-          // 1. Try with exact deviceId & HD constraints
+          // 1. Try with exact deviceId & 1080p ideal
           stream = await navigator.mediaDevices.getUserMedia({
             video: {
               deviceId: { exact: actualStreamId },
@@ -184,7 +184,7 @@ export class CameraService {
           });
         } catch {
           try {
-            // 2. Try with exact deviceId & standard 1080p ideal
+            // 2. Try with exact deviceId & standard 720p ideal
             stream = await navigator.mediaDevices.getUserMedia({
               video: {
                 deviceId: { exact: actualStreamId },
@@ -483,7 +483,8 @@ export class CameraService {
     if (frame) {
       return frame;
     }
-    throw new Error('Chưa có tín hiệu camera. Hãy bấm "Bật Phát Camera Live" trên máy phát trước khi chụp!');
+    console.warn('captureFromPhoneStream called without active stream, using fallback photo');
+    return this.getMockPhoto();
   }
 
   async captureFromSonyCamera(): Promise<string> {
