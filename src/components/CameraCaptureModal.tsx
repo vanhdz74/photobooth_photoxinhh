@@ -244,6 +244,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
   // Subscribe to Sony Multi Terminal Status & USB PTP Photos
   useEffect(() => {
     if (!isOpen) return;
+    sonyMultiService.checkNativeUsbDevices();
     const unsub = sonyMultiService.onStatusChange((st) => setSonyMultiStatus(st));
     const unsubPhoto = sonyMultiService.onPhotoCaptured((photoUrl, fileName) => {
       console.log('⚡️ [Sony Multi Photo Captured via USB PTP]:', fileName);
@@ -647,8 +648,12 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
       if (usbDev) {
         selectDeviceAndPersist(usbDev.deviceId, updatedDevices);
         setUsbFeedback(`✅ ĐÃ TÌM THẤY MÁY ẢNH USB: ${usbDev.rawLabel || usbDev.label}`);
+      } else if (sonyMultiService.getStatus().isUsbConnected) {
+        selectDeviceAndPersist('sony-multi-camera', updatedDevices);
+        setUsbFeedback(`✅ ĐÃ TÌM THẤY MÁY ẢNH SONY USB: ${sonyMultiService.getStatus().connectedDeviceName || 'Sony ILCE-6400'}`);
       } else {
-        setUsbFeedback('⚠️ Chưa nhận diện được thiết bị USB Capture Card.');
+        sonyMultiService.checkNativeUsbDevices();
+        setUsbFeedback('⚠️ Chưa nhận diện được thiết bị USB Capture Card hoặc máy ảnh Sony.');
       }
     } catch (err: any) {
       setUsbFeedback(`❌ Lỗi quét USB: ${err?.message || 'Không thể truy cập camera'}`);

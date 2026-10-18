@@ -40,6 +40,10 @@ export class SonyMultiService {
       }
     }
     this.setupNativeBridgeListener();
+    if (typeof window !== 'undefined') {
+      setTimeout(() => this.checkNativeUsbDevices(), 500);
+      setTimeout(() => this.checkNativeUsbDevices(), 2000);
+    }
   }
 
   private setupNativeBridgeListener() {

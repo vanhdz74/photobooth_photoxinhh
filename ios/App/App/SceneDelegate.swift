@@ -62,6 +62,21 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
         DispatchQueue.main.async {
             webView.evaluateJavaScript("window.__sonyNativeAvailable = true;", completionHandler: nil)
         }
+
+        // Re-sync connected camera status if camera is already detected before WebView finished loading
+        if let cam = self.connectedCamera {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                guard let self = self, let cam = self.connectedCamera else { return }
+                let payload: [String: Any] = [
+                    "name": cam.name ?? "Sony Camera",
+                    "isConnected": true,
+                    "isReady": true,
+                    "isUsbPtp": true
+                ]
+                self.notifyJs(event: "__onSonyUsbDeviceConnected", payload: payload)
+                self.notifyJs(event: "__onSonyUsbDeviceReady", payload: payload)
+            }
+        }
     }
 
     private func setupImageCaptureBrowser() {
@@ -167,6 +182,10 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
             "isUsbPtp": true
         ]
         notifyJs(event: "__onSonyUsbDeviceReady", payload: payload)
+        notifyJs(event: "__onSonyUsbDeviceConnected", payload: payload)
+
+        // Perform Sony PC Remote Handshake to unlock camera from "Connecting..." screen
+        performSonyHandshake(camera: camera)
     }
 
     // MARK: - ICCameraDeviceDelegate
@@ -238,17 +257,70 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
         CAPLog.print("⚡️ [Native Sony USB] Stopped USB PTP Live View")
     }
 
+    // MARK: - Sony PC Remote Handshake (SDIOConnect 0x9201 Sequence)
+    private func performSonyHandshake(camera: ICCameraDevice, completion: ((Bool) -> Void)? = nil) {
+        CAPLog.print("⚡️ [Native Sony USB] Bắt đầu Sony PC Remote Handshake (SDIOConnect 0x9201)...")
+        // Step 1: SDIOConnect(1, 0, 0)
+        let step1 = buildPtpCommand(opCode: 0x9201, params: [0x00000001, 0x00000000, 0x00000000])
+        camera.requestSendPTPCommand(step1, outData: nil) { [weak self] (_, _, err1) in
+            guard let self = self else { return }
+            if let e = err1 {
+                CAPLog.print("⚡️ [Native Sony USB] Handshake step 1 (0x9201, 1) info: \(e.localizedDescription)")
+            } else {
+                CAPLog.print("⚡️ [Native Sony USB] Handshake step 1 (0x9201, 1) OK")
+            }
+
+            // Step 2: SDIOConnect(2, 0, 0)
+            let step2 = self.buildPtpCommand(opCode: 0x9201, params: [0x00000002, 0x00000000, 0x00000000])
+            camera.requestSendPTPCommand(step2, outData: nil) { [weak self] (_, _, err2) in
+                guard let self = self else { return }
+                if let e = err2 {
+                    CAPLog.print("⚡️ [Native Sony USB] Handshake step 2 (0x9201, 2) info: \(e.localizedDescription)")
+                } else {
+                    CAPLog.print("⚡️ [Native Sony USB] Handshake step 2 (0x9201, 2) OK")
+                }
+
+                // Step 3: SDIOGetExtDeviceInfo(0xC8)
+                let step3 = self.buildPtpCommand(opCode: 0x9202, params: [0x000000C8])
+                camera.requestSendPTPCommand(step3, outData: nil) { [weak self] (_, _, err3) in
+                    guard let self = self else { return }
+                    if let e = err3 {
+                        CAPLog.print("⚡️ [Native Sony USB] Handshake step 3 (0x9202, 0xC8) info: \(e.localizedDescription)")
+                    } else {
+                        CAPLog.print("⚡️ [Native Sony USB] Handshake step 3 (0x9202, 0xC8) OK")
+                    }
+
+                    // Step 4: SDIOConnect(3, 0, 0) - Finalize host PC remote connection
+                    let step4 = self.buildPtpCommand(opCode: 0x9201, params: [0x00000003, 0x00000000, 0x00000000])
+                    camera.requestSendPTPCommand(step4, outData: nil) { (_, _, err4) in
+                        if let e = err4 {
+                            CAPLog.print("⚡️ [Native Sony USB] Handshake step 4 (0x9201, 3) info: \(e.localizedDescription)")
+                            completion?(false)
+                        } else {
+                            CAPLog.print("✅ [Native Sony USB] Sony PC Remote Handshake HOÀN TẤT! Máy ảnh đã sẵn sàng chụp & LiveView.")
+                            completion?(true)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private func pollNextPtpLiveviewFrame(camera: ICCameraDevice) {
         guard isPtpStreaming, !isPtpPolling else { return }
         isPtpPolling = true
 
         // Build PTP GetObject container for virtual handle 0xFFFFC002 (Sony LiveView frame)
-        let cmd = buildPtpCommand(opCode: 0x1009, param1: 0xFFFFC002)
+        let cmd = buildPtpCommand(opCode: 0x1009, params: [0xFFFFC002])
 
         if #available(iOS 13.0, *) {
             camera.requestSendPTPCommand(cmd, outData: nil) { [weak self] (responseData, outData, error) in
                 guard let self = self else { return }
                 self.isPtpPolling = false
+
+                if let err = error {
+                    CAPLog.print("⚡️ [Native Sony USB LiveView] Poll error: \(err.localizedDescription)")
+                }
 
                 if self.isPtpStreaming {
                     let dataToScan = !outData.isEmpty ? outData : responseData
@@ -272,9 +344,9 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
         }
     }
 
-    private func buildPtpCommand(opCode: UInt16, param1: UInt32? = nil) -> Data {
+    private func buildPtpCommand(opCode: UInt16, params: [UInt32] = []) -> Data {
         var data = Data()
-        let paramCount: UInt32 = param1 != nil ? 1 : 0
+        let paramCount = UInt32(params.count)
         var length: UInt32 = 12 + (paramCount * 4) // PTP container header is 12 bytes
         var type: UInt16 = 1                       // Command block (0x0001)
         var op = opCode
@@ -286,8 +358,9 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
         data.append(Data(bytes: &op, count: 2))
         data.append(Data(bytes: &txId, count: 4))
 
-        if var p1 = param1 {
-            data.append(Data(bytes: &p1, count: 4))
+        for param in params {
+            var p = param
+            data.append(Data(bytes: &p, count: 4))
         }
         return data
     }
@@ -335,7 +408,7 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
         }
 
         CAPLog.print("⚡️ [Native Sony USB] Triggering Sony PTP Shutter...")
-        let pressCmd = buildPtpCommand(opCode: 0x9207, param1: 0x0002)
+        let pressCmd = buildPtpCommand(opCode: 0x9207, params: [0x00000002])
         if #available(iOS 13.0, *) {
             camera.requestSendPTPCommand(pressCmd, outData: nil) { [weak self] (_, _, error) in
                 guard let self = self else { return }
@@ -355,7 +428,7 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
 
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
                     guard let self = self, let cam = self.connectedCamera else { return }
-                    let relCmd = self.buildPtpCommand(opCode: 0x9209, param1: 0x0002)
+                    let relCmd = self.buildPtpCommand(opCode: 0x9209, params: [0x00000002])
                     cam.requestSendPTPCommand(relCmd, outData: nil) { _, _, _ in }
                 }
             }
