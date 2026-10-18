@@ -32,6 +32,7 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
     private var isPtpPolling = false
     private var isSonyHandshakeCompleted = false
     private var isPerformingHandshake = false
+    private var isLiveviewPausedForCapture = false
 
     override func capacitorDidLoad() {
         super.capacitorDidLoad()
@@ -419,7 +420,7 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
     }
 
     private func pollNextPtpLiveviewFrame(camera: ICCameraDevice) {
-        guard isPtpStreaming, !isPtpPolling else { return }
+        guard isPtpStreaming, !isPtpPolling, !isLiveviewPausedForCapture else { return }
         guard isSonyHandshakeCompleted else {
             CAPLog.print("⚡️ [Native Sony USB LiveView] Chờ hoàn tất handshake trước khi poll frame...")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
@@ -524,6 +525,54 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
         return data.subdata(in: start..<end)
     }
 
+    private func buildPtpDataContainer(opCode: UInt16, txId: UInt32, payload: Data) -> Data {
+        var data = Data()
+        var length: UInt32 = UInt32(12 + payload.count)
+        var type: UInt16 = 2 // Data block (PTP_USB_CONTAINER_DATA = 0x0002)
+        var op = opCode
+        var tid = txId
+
+        data.append(Data(bytes: &length, count: 4))
+        data.append(Data(bytes: &type, count: 2))
+        data.append(Data(bytes: &op, count: 2))
+        data.append(Data(bytes: &tid, count: 4))
+        data.append(payload)
+        return data
+    }
+
+    private func sendSonyControlDevice(camera: ICCameraDevice, controlCode: UInt16, value: UInt16, completion: ((Bool, Error?) -> Void)? = nil) {
+        var val = value
+        let rawPayload = Data(bytes: &val, count: 2)
+
+        let txId = ptpTransactionId
+        let cmd = buildPtpCommand(opCode: 0x9207, params: [UInt32(controlCode)])
+        let dataContainer = buildPtpDataContainer(opCode: 0x9207, txId: txId, payload: rawPayload)
+
+        if #available(iOS 13.0, *) {
+            // First attempt: pass standard PTP Data Container (Type 2)
+            camera.requestSendPTPCommand(cmd, outData: dataContainer) { [weak self] (_, _, error) in
+                guard let self = self else { return }
+                if error == nil {
+                    completion?(true, nil)
+                } else {
+                    CAPLog.print("⚡️ [Native Sony USB] Control 0x\(String(format:"%04X", controlCode)) container info: \(error?.localizedDescription ?? ""), thử tiếp với raw payload...")
+                    // Second attempt: pass raw 2-byte payload in case framework creates container
+                    let retryCmd = self.buildPtpCommand(opCode: 0x9207, params: [UInt32(controlCode)])
+                    camera.requestSendPTPCommand(retryCmd, outData: rawPayload) { (_, _, err2) in
+                        if err2 == nil {
+                            completion?(true, nil)
+                        } else {
+                            CAPLog.print("⚠️ [Native Sony USB] Control 0x\(String(format:"%04X", controlCode)) raw info: \(err2?.localizedDescription ?? "")")
+                            completion?(false, err2)
+                        }
+                    }
+                }
+            }
+        } else {
+            completion?(false, nil)
+        }
+    }
+
     private func triggerUsbShutter() {
         guard let camera = self.connectedCamera else {
             CAPLog.print("⚡️ [Native Sony USB] Cannot trigger shutter: No camera connected")
@@ -532,30 +581,103 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
             return
         }
 
-        CAPLog.print("⚡️ [Native Sony USB] Triggering Sony PTP Shutter...")
-        let pressCmd = buildPtpCommand(opCode: 0x9207, params: [0x00000002])
-        if #available(iOS 13.0, *) {
-            camera.requestSendPTPCommand(pressCmd, outData: nil) { [weak self] (_, _, error) in
-                guard let self = self else { return }
-                if let err = error {
-                    CAPLog.print("⚡️ [Native Sony USB] Shutter press error: \(err.localizedDescription)")
-                    DispatchQueue.main.async {
-                        let js = "if(window.__onSonyUsbShutterResult){window.__onSonyUsbShutterResult(false, '\(err.localizedDescription)');}"
-                        self.webView?.evaluateJavaScript(js, completionHandler: nil)
-                    }
-                } else {
-                    CAPLog.print("✅ [Native Sony USB] Shutter triggered successfully via PTP!")
-                    DispatchQueue.main.async {
-                        let js = "if(window.__onSonyUsbShutterResult){window.__onSonyUsbShutterResult(true, null);}"
-                        self.webView?.evaluateJavaScript(js, completionHandler: nil)
-                    }
-                }
+        CAPLog.print("⚡️ [Native Sony USB] Bắt đầu kích hoạt Shutter trên Sony ILCE-6400...")
 
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                    guard let self = self, let cam = self.connectedCamera else { return }
-                    let relCmd = self.buildPtpCommand(opCode: 0x9209, params: [0x00000002])
-                    cam.requestSendPTPCommand(relCmd, outData: nil) { _, _, _ in }
+        // Pause LiveView polling to free USB bandwidth for shutter transaction
+        self.isLiveviewPausedForCapture = true
+
+        // Sony Mirrorless Capture Sequence (with Autofocus & Exposure Lock):
+        // 1. S1 Shutter Half-Press (0xD2C1, value 2) -> Engages AF + AE Lock
+        // 2. Wait 250ms for lens motor to lock focus
+        // 3. S2 Shutter Full-Press (0xD2C2, value 2) -> Fires physical shutter "TÁCH"
+        // 4. Wait 150ms -> Release S2 (0xD2C2, value 1)
+        // 5. Wait 150ms -> Release S1 (0xD2C1, value 1)
+        // 6. Resume LiveView after 1.5s
+        self.sendSonyControlDevice(camera: camera, controlCode: 0xD2C1, value: 0x0002) { [weak self] (s1Ok, _) in
+            guard let self = self, let cam = self.connectedCamera else { return }
+            CAPLog.print("⚡️ [Native Sony USB] S1 (Half-press AF) status: \(s1Ok ? "OK" : "Retry/Ignored")")
+
+            // Wait 250ms for lens AF motor to acquire focus
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                guard let self = self, let c = self.connectedCamera else { return }
+
+                // Fire S2 Full-Press
+                self.sendSonyControlDevice(camera: c, controlCode: 0xD2C2, value: 0x0002) { [weak self] (s2Ok, s2Err) in
+                    guard let self = self, let activeCam = self.connectedCamera else { return }
+
+                    if s2Ok {
+                        CAPLog.print("✅ [Native Sony USB] S2 Shutter Pressed OK! Màn trập đã kích hoạt!")
+                        DispatchQueue.main.async {
+                            let js = "if(window.__onSonyUsbShutterResult){window.__onSonyUsbShutterResult(true, null);}"
+                            self.webView?.evaluateJavaScript(js, completionHandler: nil)
+                        }
+                    } else {
+                        CAPLog.print("⚠️ [Native Sony USB] S2 Press failed: \(s2Err?.localizedDescription ?? ""), trying fallback modes...")
+                        self.triggerUsbShutterFallback(camera: activeCam)
+                    }
+
+                    // Release S2 Full-Press after 150ms
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                        guard let self = self, let cam2 = self.connectedCamera else { return }
+                        self.sendSonyControlDevice(camera: cam2, controlCode: 0xD2C2, value: 0x0001) { [weak self] (_, _) in
+                            CAPLog.print("⚡️ [Native Sony USB] S2 Released")
+
+                            // Release S1 Half-Press after 150ms
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                                guard let self = self, let cam3 = self.connectedCamera else { return }
+                                self.sendSonyControlDevice(camera: cam3, controlCode: 0xD2C1, value: 0x0001) { [weak self] (_, _) in
+                                    CAPLog.print("⚡️ [Native Sony USB] S1 Released - Shutter Cycle Completed")
+                                    self.scheduleLiveviewResume()
+                                }
+                            }
+                        }
+                    }
                 }
+            }
+        }
+    }
+
+    private func triggerUsbShutterFallback(camera: ICCameraDevice) {
+        // Fallback 1: REQUEST_ONE_SHOOTING (0xD2C7) with value 0x0001
+        self.sendSonyControlDevice(camera: camera, controlCode: 0xD2C7, value: 0x0001) { [weak self] (ok1, _) in
+            guard let self = self else { return }
+            if ok1 {
+                CAPLog.print("✅ [Native Sony USB] REQUEST_ONE_SHOOTING (0xD2C7) thành công!")
+                DispatchQueue.main.async {
+                    let js = "if(window.__onSonyUsbShutterResult){window.__onSonyUsbShutterResult(true, null);}"
+                    self.webView?.evaluateJavaScript(js, completionHandler: nil)
+                }
+                self.scheduleLiveviewResume()
+            } else {
+                // Fallback 2: Standard PTP InitiateCapture (0x100E)
+                let initCapCmd = self.buildPtpCommand(opCode: 0x100E, params: [0x00000000, 0x00000000])
+                camera.requestSendPTPCommand(initCapCmd, outData: nil) { [weak self] (_, _, err2) in
+                    guard let self = self else { return }
+                    if let e2 = err2 {
+                        CAPLog.print("❌ [Native Sony USB] Lỗi kích chụp fallback 0x100E: \(e2.localizedDescription)")
+                        DispatchQueue.main.async {
+                            let js = "if(window.__onSonyUsbShutterResult){window.__onSonyUsbShutterResult(false, '\(e2.localizedDescription)');}"
+                            self.webView?.evaluateJavaScript(js, completionHandler: nil)
+                        }
+                    } else {
+                        CAPLog.print("✅ [Native Sony USB] InitiateCapture (0x100E) thành công!")
+                        DispatchQueue.main.async {
+                            let js = "if(window.__onSonyUsbShutterResult){window.__onSonyUsbShutterResult(true, null);}"
+                            self.webView?.evaluateJavaScript(js, completionHandler: nil)
+                        }
+                    }
+                    self.scheduleLiveviewResume()
+                }
+            }
+        }
+    }
+
+    private func scheduleLiveviewResume() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            guard let self = self else { return }
+            self.isLiveviewPausedForCapture = false
+            if self.isPtpStreaming, let c = self.connectedCamera {
+                self.pollNextPtpLiveviewFrame(camera: c)
             }
         }
     }

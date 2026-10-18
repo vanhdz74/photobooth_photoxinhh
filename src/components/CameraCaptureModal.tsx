@@ -380,28 +380,41 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
           7000,
           async () => {
             let rawPhoto = '';
-            if (videoRef.current && (videoRef.current.videoWidth > 0 || videoRef.current.srcObject)) {
-              rawPhoto = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox, zoomLevel);
-            } else if (sonyLiveFrame) {
+            if (videoRef.current && videoRef.current.videoWidth > 0) {
+              try {
+                rawPhoto = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox, zoomLevel);
+              } catch {}
+            }
+            if (!rawPhoto && sonyLiveFrame) {
               rawPhoto = sonyLiveFrame;
-            } else {
+            }
+            if (!rawPhoto) {
               rawPhoto = await cameraService.getMockPhoto();
             }
-            return sonyMultiService.enhanceImageSharpness(rawPhoto);
+            try {
+              return await sonyMultiService.enhanceImageSharpness(rawPhoto);
+            } catch {
+              return rawPhoto;
+            }
           }
         );
         setCaptureError(null);
       } catch (err: any) {
         console.warn('Sony multi capture error, falling back:', err);
         setCaptureError(err?.message || 'Lỗi chụp từ cổng Multi');
-        if (videoRef.current && (videoRef.current.videoWidth > 0 || videoRef.current.srcObject)) {
-          const rawPhoto = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox, zoomLevel);
-          photoData = await sonyMultiService.enhanceImageSharpness(rawPhoto);
-        } else if (sonyLiveFrame) {
-          photoData = await sonyMultiService.enhanceImageSharpness(sonyLiveFrame);
-        } else {
-          photoData = await cameraService.getMockPhoto();
+        let rawPhoto = '';
+        if (videoRef.current && videoRef.current.videoWidth > 0) {
+          try {
+            rawPhoto = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox, zoomLevel);
+          } catch {}
         }
+        if (!rawPhoto && sonyLiveFrame) {
+          rawPhoto = sonyLiveFrame;
+        }
+        if (!rawPhoto) {
+          rawPhoto = await cameraService.getMockPhoto();
+        }
+        photoData = rawPhoto;
       }
     } else if (selectedDevice === 'phone-live-camera') {
       if (videoRef.current && (videoRef.current.videoWidth > 0 || videoRef.current.srcObject)) {

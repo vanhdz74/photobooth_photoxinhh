@@ -358,8 +358,13 @@ export class CameraService {
       ctx.scale(-1, 1);
     }
 
-    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL('image/jpeg', 0.95);
+    try {
+      ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/jpeg', 0.95);
+    } catch (err) {
+      console.warn('captureFromVideoElement canvas error, using mock:', err);
+      return this.getMockPhoto();
+    }
   }
 
   async captureFromMediaStream(

@@ -451,24 +451,31 @@ export class SonyMultiService {
    */
   async enhanceImageSharpness(dataUrl: string): Promise<string> {
     if (!this.autoEnhance || typeof document === 'undefined') return dataUrl;
+    if (!dataUrl || !dataUrl.startsWith('data:image/')) return dataUrl;
 
     return new Promise((resolve) => {
       const img = new Image();
+      img.crossOrigin = 'anonymous';
       img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return resolve(dataUrl);
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return resolve(dataUrl);
 
-        // Draw original
-        ctx.drawImage(img, 0, 0);
+          // Draw original
+          ctx.drawImage(img, 0, 0);
 
-        // Enhance contrast and color saturation slightly for crisp studio look
-        ctx.filter = 'contrast(1.08) saturate(1.06) brightness(1.02)';
-        ctx.drawImage(img, 0, 0);
+          // Enhance contrast and color saturation slightly for crisp studio look
+          ctx.filter = 'contrast(1.08) saturate(1.06) brightness(1.02)';
+          ctx.drawImage(img, 0, 0);
 
-        resolve(canvas.toDataURL('image/jpeg', 0.96));
+          resolve(canvas.toDataURL('image/jpeg', 0.96));
+        } catch (err) {
+          console.warn('enhanceImageSharpness canvas error, using raw:', err);
+          resolve(dataUrl);
+        }
       };
       img.onerror = () => resolve(dataUrl);
       img.src = dataUrl;
