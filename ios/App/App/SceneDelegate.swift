@@ -30,6 +30,8 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
     private var isPtpStreaming = false
     private var ptpTransactionId: UInt32 = 1
     private var isPtpPolling = false
+    private var isSonyHandshakeCompleted = false
+    private var isPerformingHandshake = false
 
     override func capacitorDidLoad() {
         super.capacitorDidLoad()
@@ -148,6 +150,8 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
             stopUsbLiveview()
             camera.requestCloseSession()
             self.connectedCamera = nil
+            self.isSonyHandshakeCompleted = false
+            self.isPerformingHandshake = false
             notifyJs(event: "__onSonyUsbDeviceDisconnected", payload: ["isConnected": false])
         }
     }
@@ -163,12 +167,16 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
 
     func device(_ device: ICDevice, didCloseSessionWithError error: Error?) {
         CAPLog.print("⚡️ [Native Sony USB] Session closed for: \(device.name ?? "Device")")
+        self.isSonyHandshakeCompleted = false
+        self.isPerformingHandshake = false
     }
 
     func didRemove(_ device: ICDevice) {
         if let camera = device as? ICCameraDevice, camera == self.connectedCamera {
             stopUsbLiveview()
             self.connectedCamera = nil
+            self.isSonyHandshakeCompleted = false
+            self.isPerformingHandshake = false
             notifyJs(event: "__onSonyUsbDeviceDisconnected", payload: ["isConnected": false])
         }
     }
@@ -185,7 +193,16 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
         notifyJs(event: "__onSonyUsbDeviceConnected", payload: payload)
 
         // Perform Sony PC Remote Handshake to unlock camera from "Connecting..." screen
-        performSonyHandshake(camera: camera)
+        isPerformingHandshake = true
+        performSonyHandshake(camera: camera) { [weak self] success in
+            guard let self = self else { return }
+            self.isSonyHandshakeCompleted = success
+            self.isPerformingHandshake = false
+            if success && self.isPtpStreaming, let cam = self.connectedCamera {
+                CAPLog.print("⚡️ [Native Sony USB] Handshake hoàn tất -> Bắt đầu poll LiveView...")
+                self.pollNextPtpLiveviewFrame(camera: cam)
+            }
+        }
     }
 
     // MARK: - ICCameraDeviceDelegate
@@ -247,8 +264,23 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
             return
         }
         isPtpStreaming = true
-        CAPLog.print("⚡️ [Native Sony USB] Starting USB PTP Live View polling...")
-        pollNextPtpLiveviewFrame(camera: camera)
+        CAPLog.print("⚡️ [Native Sony USB] Starting USB PTP Live View...")
+        if isSonyHandshakeCompleted {
+            pollNextPtpLiveviewFrame(camera: camera)
+        } else if !isPerformingHandshake {
+            isPerformingHandshake = true
+            performSonyHandshake(camera: camera) { [weak self] success in
+                guard let self = self else { return }
+                self.isSonyHandshakeCompleted = success
+                self.isPerformingHandshake = false
+                if success && self.isPtpStreaming, let cam = self.connectedCamera {
+                    CAPLog.print("⚡️ [Native Sony USB] Handshake hoàn tất -> Bắt đầu poll LiveView...")
+                    self.pollNextPtpLiveviewFrame(camera: cam)
+                }
+            }
+        } else {
+            CAPLog.print("⚡️ [Native Sony USB] Handshake đang diễn ra, sẽ tự động bắt đầu stream khi xong.")
+        }
     }
 
     private func stopUsbLiveview() {
@@ -295,11 +327,10 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
                     camera.requestSendPTPCommand(step4, outData: nil) { (_, _, err4) in
                         if let e = err4 {
                             CAPLog.print("⚡️ [Native Sony USB] Handshake step 4 (0x9201, 3) info: \(e.localizedDescription)")
-                            completion?(false)
                         } else {
                             CAPLog.print("✅ [Native Sony USB] Sony PC Remote Handshake HOÀN TẤT! Máy ảnh đã sẵn sàng chụp & LiveView.")
-                            completion?(true)
                         }
+                        completion?(true)
                     }
                 }
             }
@@ -308,13 +339,21 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
 
     private func pollNextPtpLiveviewFrame(camera: ICCameraDevice) {
         guard isPtpStreaming, !isPtpPolling else { return }
+        guard isSonyHandshakeCompleted else {
+            CAPLog.print("⚡️ [Native Sony USB LiveView] Chờ hoàn tất handshake trước khi poll frame...")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self = self, self.isPtpStreaming, let cam = self.connectedCamera else { return }
+                self.pollNextPtpLiveviewFrame(camera: cam)
+            }
+            return
+        }
         isPtpPolling = true
 
         // Build PTP GetObject container for virtual handle 0xFFFFC002 (Sony LiveView frame)
         let cmd = buildPtpCommand(opCode: 0x1009, params: [0xFFFFC002])
 
         if #available(iOS 13.0, *) {
-            camera.requestSendPTPCommand(cmd, outData: nil) { [weak self] (responseData, outData, error) in
+            camera.requestSendPTPCommand(cmd, outData: nil) { [weak self] (inData, responseData, error) in
                 guard let self = self else { return }
                 self.isPtpPolling = false
 
@@ -323,13 +362,18 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
                 }
 
                 if self.isPtpStreaming {
-                    let dataToScan = !outData.isEmpty ? outData : responseData
+                    // inData: Data payload returned by camera containing JPEG bytes
+                    // responseData: 12-byte PTP response packet
+                    let dataToScan = inData.count > 100 ? inData : responseData
                     if let jpeg = self.extractJpeg(from: dataToScan) {
                         let base64 = jpeg.base64EncodedString()
                         DispatchQueue.main.async {
                             let js = "if(window.__onSonyLiveviewFrame){window.__onSonyLiveviewFrame('data:image/jpeg;base64,\(base64)');}"
                             self.webView?.evaluateJavaScript(js, completionHandler: nil)
                         }
+                    } else if inData.count > 0 || responseData.count > 0 {
+                        let hexPrefix = dataToScan.prefix(16).map { String(format: "%02X", $0) }.joined(separator: " ")
+                        CAPLog.print("⚠️ [Native Sony USB LiveView] inData: \(inData.count)B, resp: \(responseData.count)B. First 16 bytes: \(hexPrefix)")
                     }
 
                     // Poll next frame after 35ms (~28 fps)

@@ -245,7 +245,13 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
   useEffect(() => {
     if (!isOpen) return;
     sonyMultiService.checkNativeUsbDevices();
-    const unsub = sonyMultiService.onStatusChange((st) => setSonyMultiStatus(st));
+    const unsub = sonyMultiService.onStatusChange((st) => {
+      setSonyMultiStatus(st);
+      if (st.isUsbConnected && (!selectedDevice || selectedDevice === 'mock-camera')) {
+        setSelectedDevice('sony-multi-camera');
+        safeSetItem('photobooth_selected_camera_id', 'sony-multi-camera');
+      }
+    });
     const unsubPhoto = sonyMultiService.onPhotoCaptured((photoUrl, fileName) => {
       console.log('⚡️ [Sony Multi Photo Captured via USB PTP]:', fileName);
       setCapturedPhotos((prev) => {
@@ -1161,80 +1167,155 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
                 }}
               />
             ) : selectedDevice === 'sony-multi-camera' && !streamRef.current ? (
-              /* Sony Multi Assistant when no video feed is detected yet */
+              /* Sony Multi View / Assistant when no video feed is detected yet */
               <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center max-w-lg mx-auto z-10 animate-in fade-in zoom-in-95 duration-200">
-                <div className={`w-16 h-16 rounded-3xl ${sonyMultiStatus.isUsbConnected ? 'bg-emerald-500/20 border-2 border-emerald-500/50 text-emerald-400' : 'bg-amber-500/20 border-2 border-amber-500/50 text-amber-400'} flex items-center justify-center mb-3 shadow-xl`}>
-                  <Usb className="w-8 h-8 animate-pulse" />
-                </div>
-                
                 {sonyMultiStatus.isUsbConnected ? (
-                  <div className="mb-2 px-3 py-1 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 mx-auto">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-                    <span>Đã nhận diện cáp USB: {sonyMultiStatus.connectedDeviceName || 'Sony ILCE-6400'} (Lệnh chụp & Thẻ nhớ OK)</span>
-                  </div>
-                ) : null}
+                  <>
+                    <div className="w-16 h-16 rounded-3xl bg-emerald-500/20 border-2 border-emerald-500/50 text-emerald-400 flex items-center justify-center mb-3 shadow-xl">
+                      <RefreshCw className="w-8 h-8 animate-spin text-emerald-400" />
+                    </div>
+                    
+                    <div className="mb-2 px-3 py-1 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 mx-auto">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                      <span>Đã nhận diện: {sonyMultiStatus.connectedDeviceName || 'Sony ILCE-6400'}</span>
+                    </div>
 
-                <h3 className="text-base sm:text-lg font-bold text-white mb-1.5">
-                  {sonyMultiStatus.isUsbConnected ? 'Cần Chọn Nguồn Màn Hình Soi Dáng' : 'Chưa Nhận Luồng Video từ Máy Ảnh Sony'}
-                </h3>
-                
-                <p className="text-xs text-gray-300 mb-4 leading-relaxed">
-                  Cáp Micro-USB trên máy ảnh Sony chỉ truyền <strong>lệnh chụp và lưu ảnh vào thẻ nhớ</strong>, không phải cáp xuất hình video webcam. Bạn hãy chọn 1 trong 3 cách dưới đây để hiển thị màn hình soi dáng:
-                </p>
+                    <h3 className="text-base sm:text-lg font-bold text-white mb-1.5">
+                      Đang Khởi Động LiveView từ Máy Ảnh Sony...
+                    </h3>
+                    
+                    <p className="text-xs text-gray-300 mb-4 leading-relaxed max-w-sm">
+                      Đang kết nối luồng PTP USB trực tiếp (chuẩn Monitor+). Khung hình từ ống kính máy ảnh sẽ tự động hiển thị ngay khi mở session.
+                    </p>
 
-                <div className="w-full flex flex-col gap-2.5 text-xs">
-                  {/* Way 3: Mirror using iPad Camera (Primary recommendation for instant use) */}
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      try {
-                        const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-                        streamRef.current = fallbackStream;
-                        if (videoRef.current) {
-                          videoRef.current.srcObject = fallbackStream;
-                          videoRef.current.play().catch(() => {});
-                        }
-                        setSonyMultiFeedback('📱 Đang dùng Camera iPad làm gương soi dáng (Bấm chụp vẫn kích máy ảnh Sony)');
-                      } catch {
-                        setSonyMultiFeedback('❌ Không thể mở camera iPad làm gương');
-                      }
-                    }}
-                    className="w-full py-2.5 px-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-2xl font-bold flex items-center justify-center gap-2 shadow-lg cursor-pointer transition-all active:scale-98"
-                  >
-                    <Camera className="w-4 h-4 text-white" />
-                    <span>Dùng Camera iPad soi dáng (Bấm chụp sẽ chụp bằng Sony {sonyMultiStatus.connectedDeviceName || 'a6400'})</span>
-                  </button>
+                    <details className="w-full text-left bg-gray-900/60 border border-gray-700/60 rounded-2xl p-3">
+                      <summary className="text-xs font-semibold text-gray-300 cursor-pointer hover:text-white select-none">
+                        ⚙️ Tùy chọn nguồn soi dáng khác (Camera iPad / Wi-Fi / Capture Card)
+                      </summary>
+                      <div className="w-full flex flex-col gap-2.5 mt-3 text-xs">
+                        {/* Way 3: Mirror using iPad Camera */}
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                              streamRef.current = fallbackStream;
+                              if (videoRef.current) {
+                                videoRef.current.srcObject = fallbackStream;
+                                videoRef.current.play().catch(() => {});
+                              }
+                              setSonyMultiFeedback('📱 Đang dùng Camera iPad làm gương soi dáng (Bấm chụp vẫn kích máy ảnh Sony)');
+                            } catch {
+                              setSonyMultiFeedback('❌ Không thể mở camera iPad làm gương');
+                            }
+                          }}
+                          className="w-full py-2.5 px-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-2xl font-bold flex items-center justify-center gap-2 shadow-lg cursor-pointer transition-all active:scale-98"
+                        >
+                          <Camera className="w-4 h-4 text-white" />
+                          <span>Dùng Camera iPad soi dáng (Bấm chụp vẫn chụp bằng Sony {sonyMultiStatus.connectedDeviceName || 'a6400'})</span>
+                        </button>
 
-                  {/* Way 1: Wi-Fi LiveView */}
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      setSonyMultiFeedback('📡 Đang kết nối Wi-Fi máy ảnh Sony...');
-                      const res = await sonyCameraService.testConnection();
-                      if (res.success) {
-                        await sonyCameraService.startLiveview().catch(() => {});
-                        setSonyMultiFeedback('✅ Đã kết nối Wi-Fi Sony! LiveView & Màn trập TÁCH đã sẵn sàng.');
-                      } else {
-                        setShowSonySettings(true);
-                      }
-                    }}
-                    className="w-full py-2.5 px-3 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white rounded-2xl font-bold flex items-center justify-center gap-2 shadow-lg cursor-pointer transition-all active:scale-98"
-                  >
-                    <Wifi className="w-4 h-4 text-white" />
-                    <span>Bật Wi-Fi Sony (Xem LiveView không dây qua ống kính)</span>
-                  </button>
+                        {/* Way 1: Wi-Fi LiveView */}
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            setSonyMultiFeedback('📡 Đang kết nối Wi-Fi máy ảnh Sony...');
+                            const res = await sonyCameraService.testConnection();
+                            if (res.success) {
+                              await sonyCameraService.startLiveview().catch(() => {});
+                              setSonyMultiFeedback('✅ Đã kết nối Wi-Fi Sony! LiveView & Màn trập TÁCH đã sẵn sàng.');
+                            } else {
+                              setShowSonySettings(true);
+                            }
+                          }}
+                          className="w-full py-2.5 px-3 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white rounded-2xl font-bold flex items-center justify-center gap-2 shadow-lg cursor-pointer transition-all active:scale-98"
+                        >
+                          <Wifi className="w-4 h-4 text-white" />
+                          <span>Bật Wi-Fi Sony (Xem LiveView không dây qua ống kính)</span>
+                        </button>
 
-                  {/* Way 2: Rescan HDMI Capture Card */}
-                  <button
-                    type="button"
-                    onClick={handleScanUsb}
-                    disabled={isScanningUsb}
-                    className="w-full py-2 px-3 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-2xl font-semibold flex items-center justify-center gap-2 border border-gray-700 cursor-pointer transition-all active:scale-98"
-                  >
-                    <Usb className="w-4 h-4 text-gray-300" />
-                    <span>{isScanningUsb ? 'Đang quét...' : 'Cắm cáp Micro-HDMI sang USB Capture Card (1080p 60fps)'}</span>
-                  </button>
-                </div>
+                        {/* Way 2: Rescan HDMI Capture Card */}
+                        <button
+                          type="button"
+                          onClick={handleScanUsb}
+                          disabled={isScanningUsb}
+                          className="w-full py-2 px-3 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-2xl font-semibold flex items-center justify-center gap-2 border border-gray-700 cursor-pointer transition-all active:scale-98"
+                        >
+                          <Usb className="w-4 h-4 text-gray-300" />
+                          <span>{isScanningUsb ? 'Đang quét...' : 'Cắm cáp Micro-HDMI sang USB Capture Card (1080p 60fps)'}</span>
+                        </button>
+                      </div>
+                    </details>
+                  </>
+                ) : (
+                  <>
+                    <div className="w-16 h-16 rounded-3xl bg-amber-500/20 border-2 border-amber-500/50 text-amber-400 flex items-center justify-center mb-3 shadow-xl">
+                      <Usb className="w-8 h-8 animate-pulse" />
+                    </div>
+
+                    <h3 className="text-base sm:text-lg font-bold text-white mb-1.5">
+                      Chưa Nhận Diện Cáp USB Máy Ảnh Sony
+                    </h3>
+                    
+                    <p className="text-xs text-gray-300 mb-4 leading-relaxed">
+                      Vui lòng cắm cáp Micro-USB/USB-C từ máy ảnh Sony vào iPad. Đảm bảo trong Menu máy ảnh đã chọn <strong>USB Connection: PC Remote</strong>.
+                    </p>
+
+                    <div className="w-full flex flex-col gap-2.5 text-xs">
+                      {/* Way 3: Mirror using iPad Camera */}
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                            streamRef.current = fallbackStream;
+                            if (videoRef.current) {
+                              videoRef.current.srcObject = fallbackStream;
+                              videoRef.current.play().catch(() => {});
+                            }
+                            setSonyMultiFeedback('📱 Đang dùng Camera iPad làm gương soi dáng (Bấm chụp vẫn kích máy ảnh Sony)');
+                          } catch {
+                            setSonyMultiFeedback('❌ Không thể mở camera iPad làm gương');
+                          }
+                        }}
+                        className="w-full py-2.5 px-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-2xl font-bold flex items-center justify-center gap-2 shadow-lg cursor-pointer transition-all active:scale-98"
+                      >
+                        <Camera className="w-4 h-4 text-white" />
+                        <span>Dùng Camera iPad soi dáng tạm thời</span>
+                      </button>
+
+                      {/* Way 1: Wi-Fi LiveView */}
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          setSonyMultiFeedback('📡 Đang kết nối Wi-Fi máy ảnh Sony...');
+                          const res = await sonyCameraService.testConnection();
+                          if (res.success) {
+                            await sonyCameraService.startLiveview().catch(() => {});
+                            setSonyMultiFeedback('✅ Đã kết nối Wi-Fi Sony! LiveView & Màn trập TÁCH đã sẵn sàng.');
+                          } else {
+                            setShowSonySettings(true);
+                          }
+                        }}
+                        className="w-full py-2.5 px-3 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white rounded-2xl font-bold flex items-center justify-center gap-2 shadow-lg cursor-pointer transition-all active:scale-98"
+                      >
+                        <Wifi className="w-4 h-4 text-white" />
+                        <span>Bật Wi-Fi Sony (Xem LiveView không dây qua ống kính)</span>
+                      </button>
+
+                      {/* Way 2: Rescan HDMI Capture Card */}
+                      <button
+                        type="button"
+                        onClick={handleScanUsb}
+                        disabled={isScanningUsb}
+                        className="w-full py-2 px-3 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-2xl font-semibold flex items-center justify-center gap-2 border border-gray-700 cursor-pointer transition-all active:scale-98"
+                      >
+                        <Usb className="w-4 h-4 text-gray-300" />
+                        <span>{isScanningUsb ? 'Đang quét...' : 'Cắm cáp Micro-HDMI sang USB Capture Card (1080p 60fps)'}</span>
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             ) : (
               <video
