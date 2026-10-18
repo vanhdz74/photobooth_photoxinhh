@@ -2,6 +2,7 @@ import UIKit
 import WebKit
 import Capacitor
 import AVFoundation
+import ImageCaptureCore
 
 class LeakAvoider: NSObject, WKScriptMessageHandler {
     weak var delegate: WKScriptMessageHandler?
@@ -14,7 +15,7 @@ class LeakAvoider: NSObject, WKScriptMessageHandler {
     }
 }
 
-class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSessionDataDelegate {
+class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSessionDataDelegate, ICDeviceBrowserDelegate, ICCameraDeviceDelegate {
     private var streamSession: URLSession?
     private var streamTask: URLSessionDataTask?
     private var streamBuffer = Data()
@@ -23,14 +24,23 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
     private var isHandlerRegistered = false
     private var isEvaluatingFrame = false
 
+    // MARK: - USB PTP Camera Bridge (ImageCaptureCore - Mechanism like Monitor+)
+    private var deviceBrowser: ICDeviceBrowser?
+    private var connectedCamera: ICCameraDevice?
+    private var isPtpStreaming = false
+    private var ptpTransactionId: UInt32 = 1
+    private var isPtpPolling = false
+
     override func capacitorDidLoad() {
         super.capacitorDidLoad()
         attachNativeHandler()
+        setupImageCaptureBrowser()
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
         attachNativeHandler()
+        setupImageCaptureBrowser()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -51,6 +61,17 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
         // Notify JavaScript environment that native bridge is active
         DispatchQueue.main.async {
             webView.evaluateJavaScript("window.__sonyNativeAvailable = true;", completionHandler: nil)
+        }
+    }
+
+    private func setupImageCaptureBrowser() {
+        if deviceBrowser == nil {
+            let browser = ICDeviceBrowser()
+            browser.delegate = self
+            browser.browsedDeviceTypeMask = [.camera]
+            browser.start()
+            self.deviceBrowser = browser
+            CAPLog.print("⚡️ [Native Sony USB] Initialized ICDeviceBrowser for USB PTP cameras")
         }
     }
 
@@ -75,6 +96,231 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
             stopSonyLiveview()
         } else if action == "checkUsbCameras" {
             checkNativeCameras()
+        } else if action == "startUsbLiveview" {
+            startUsbLiveview()
+        } else if action == "stopUsbLiveview" {
+            stopUsbLiveview()
+        } else if action == "triggerUsbShutter" {
+            triggerUsbShutter()
+        }
+    }
+
+    // MARK: - ICDeviceBrowserDelegate
+    func deviceBrowser(_ browser: ICDeviceBrowser, didAdd device: ICDevice, moreComing: Bool) {
+        let devName = device.name ?? "Camera"
+        CAPLog.print("⚡️ [Native Sony USB] Detected USB Device: '\(devName)'")
+        if let camera = device as? ICCameraDevice {
+            self.connectedCamera = camera
+            camera.delegate = self
+            camera.requestOpenSession()
+            CAPLog.print("⚡️ [Native Sony USB] Opening PTP session for: '\(devName)'")
+            
+            let payload: [String: Any] = [
+                "name": devName,
+                "isConnected": true,
+                "isUsbPtp": true
+            ]
+            notifyJs(event: "__onSonyUsbDeviceConnected", payload: payload)
+        }
+    }
+
+    func deviceBrowser(_ browser: ICDeviceBrowser, didRemove device: ICDevice, moreGoing: Bool) {
+        let devName = device.name ?? "Camera"
+        CAPLog.print("⚡️ [Native Sony USB] Removed USB Device: '\(devName)'")
+        if let camera = device as? ICCameraDevice, camera == self.connectedCamera {
+            stopUsbLiveview()
+            camera.requestCloseSession()
+            self.connectedCamera = nil
+            notifyJs(event: "__onSonyUsbDeviceDisconnected", payload: ["isConnected": false])
+        }
+    }
+
+    // MARK: - ICCameraDeviceDelegate
+    func deviceDidBecomeReady(_ device: ICDevice) {
+        guard let camera = device as? ICCameraDevice else { return }
+        CAPLog.print("⚡️ [Native Sony USB] Camera Session Ready: '\(camera.name ?? "")'")
+        let payload: [String: Any] = [
+            "name": camera.name ?? "Sony Camera",
+            "isReady": true,
+            "isUsbPtp": true
+        ]
+        notifyJs(event: "__onSonyUsbDeviceReady", payload: payload)
+    }
+
+    func didRemoveDevice(_ device: ICDevice) {
+        if let camera = device as? ICCameraDevice, camera == self.connectedCamera {
+            stopUsbLiveview()
+            self.connectedCamera = nil
+            notifyJs(event: "__onSonyUsbDeviceDisconnected", payload: ["isConnected": false])
+        }
+    }
+
+    func cameraDevice(_ camera: ICCameraDevice, didAdd items: [ICCameraItem]) {
+        CAPLog.print("⚡️ [Native Sony USB] Camera added \(items.count) item(s)")
+        guard let lastItem = items.last as? ICCameraFile else { return }
+        let ext = (lastItem.name ?? "").lowercased()
+        if ext.hasSuffix(".jpg") || ext.hasSuffix(".jpeg") || ext.hasSuffix(".png") {
+            CAPLog.print("📸 [Native Sony USB] New Photo file added: '\(lastItem.name ?? "")'")
+            lastItem.requestThumbnailData(options: nil) { [weak self] (data, error) in
+                if let photoData = data {
+                    let base64 = photoData.base64EncodedString()
+                    let dataUrl = "data:image/jpeg;base64,\(base64)"
+                    DispatchQueue.main.async {
+                        let js = "if(window.__onSonyUsbPhotoCaptured){window.__onSonyUsbPhotoCaptured('\(dataUrl)', '\(lastItem.name ?? "photo.jpg")');}"
+                        self?.webView?.evaluateJavaScript(js, completionHandler: nil)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - USB PTP Live View & Shutter Control (Sony PC Remote Mechanism)
+    private func startUsbLiveview() {
+        guard let camera = self.connectedCamera else {
+            CAPLog.print("⚡️ [Native Sony USB] Cannot start LiveView: No camera connected via USB")
+            return
+        }
+        isPtpStreaming = true
+        CAPLog.print("⚡️ [Native Sony USB] Starting USB PTP Live View polling...")
+        pollNextPtpLiveviewFrame(camera: camera)
+    }
+
+    private func stopUsbLiveview() {
+        isPtpStreaming = false
+        isPtpPolling = false
+        CAPLog.print("⚡️ [Native Sony USB] Stopped USB PTP Live View")
+    }
+
+    private func pollNextPtpLiveviewFrame(camera: ICCameraDevice) {
+        guard isPtpStreaming, !isPtpPolling else { return }
+        isPtpPolling = true
+
+        // Build PTP GetObject container for virtual handle 0xFFFFC002 (Sony LiveView frame)
+        let cmd = buildPtpCommand(opCode: 0x1009, param1: 0xFFFFC002)
+
+        if #available(iOS 13.0, *) {
+            camera.requestSendPTPCommand(cmd, outData: nil) { [weak self] (responseData, outData, error) in
+                guard let self = self else { return }
+                self.isPtpPolling = false
+
+                if self.isPtpStreaming {
+                    let dataToScan = (outData != nil && !outData!.isEmpty) ? outData! : responseData
+                    if let jpeg = self.extractJpeg(from: dataToScan) {
+                        let base64 = jpeg.base64EncodedString()
+                        DispatchQueue.main.async {
+                            let js = "if(window.__onSonyLiveviewFrame){window.__onSonyLiveviewFrame('data:image/jpeg;base64,\(base64)');}"
+                            self.webView?.evaluateJavaScript(js, completionHandler: nil)
+                        }
+                    }
+
+                    // Poll next frame after 35ms (~28 fps)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.035) { [weak self] in
+                        guard let self = self, self.isPtpStreaming, let cam = self.connectedCamera else { return }
+                        self.pollNextPtpLiveviewFrame(camera: cam)
+                    }
+                }
+            }
+        } else {
+            isPtpPolling = false
+        }
+    }
+
+    private func buildPtpCommand(opCode: UInt16, param1: UInt32? = nil) -> Data {
+        var data = Data()
+        let paramCount: UInt32 = param1 != nil ? 1 : 0
+        var length: UInt32 = 12 + (paramCount * 4) // PTP container header is 12 bytes
+        var type: UInt16 = 1                       // Command block (0x0001)
+        var op = opCode
+        var txId = ptpTransactionId
+        ptpTransactionId &+= 1
+
+        data.append(Data(bytes: &length, count: 4))
+        data.append(Data(bytes: &type, count: 2))
+        data.append(Data(bytes: &op, count: 2))
+        data.append(Data(bytes: &txId, count: 4))
+
+        if var p1 = param1 {
+            data.append(Data(bytes: &p1, count: 4))
+        }
+        return data
+    }
+
+    private func extractJpeg(from data: Data) -> Data? {
+        guard data.count > 100 else { return nil }
+        var startIndex: Int?
+        var endIndex: Int?
+
+        data.withUnsafeBytes { rawBuffer in
+            guard let ptr = rawBuffer.bindMemory(to: UInt8.self).baseAddress else { return }
+            let count = data.count
+
+            // Find SOI 0xFF, 0xD8
+            for i in 0..<(count - 1) {
+                if ptr[i] == 0xFF && ptr[i + 1] == 0xD8 {
+                    startIndex = i
+                    break
+                }
+            }
+
+            guard let start = startIndex else { return }
+
+            // Find EOI 0xFF, 0xD9
+            var i = count - 2
+            while i >= start {
+                if ptr[i] == 0xFF && ptr[i + 1] == 0xD9 {
+                    endIndex = i + 2
+                    break
+                }
+                i -= 1
+            }
+        }
+
+        guard let start = startIndex, let end = endIndex, end > start else { return nil }
+        return data.subdata(in: start..<end)
+    }
+
+    private func triggerUsbShutter() {
+        guard let camera = self.connectedCamera else {
+            CAPLog.print("⚡️ [Native Sony USB] Cannot trigger shutter: No camera connected")
+            let js = "if(window.__onSonyUsbShutterResult){window.__onSonyUsbShutterResult(false, 'Chưa kết nối máy ảnh qua cổng USB');}"
+            webView?.evaluateJavaScript(js, completionHandler: nil)
+            return
+        }
+
+        CAPLog.print("⚡️ [Native Sony USB] Triggering PTP Shutter...")
+        // 1. Try standard requestTakePTPPhoto
+        camera.requestTakePTPPhoto { [weak self] error in
+            guard let self = self else { return }
+            if let err = error {
+                CAPLog.print("⚡️ [Native Sony USB] requestTakePTPPhoto error: \(err.localizedDescription), trying vendor PTP opcode 0x9207...")
+                // Fallback to Sony PTP vendor opcode 0x9207 (Full press shutter)
+                let pressCmd = self.buildPtpCommand(opCode: 0x9207, param1: 0x0002)
+                if #available(iOS 13.0, *) {
+                    camera.requestSendPTPCommand(pressCmd, outData: nil) { (_, _, _) in
+                        // Release shutter after 200ms
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            let relCmd = self.buildPtpCommand(opCode: 0x9209, param1: 0x0002)
+                            camera.requestSendPTPCommand(relCmd, outData: nil, completion: { _, _, _ in })
+                        }
+                    }
+                }
+            } else {
+                CAPLog.print("✅ [Native Sony USB] Shutter triggered successfully via PTP!")
+            }
+
+            DispatchQueue.main.async {
+                let js = "if(window.__onSonyUsbShutterResult){window.__onSonyUsbShutterResult(true, null);}"
+                self.webView?.evaluateJavaScript(js, completionHandler: nil)
+            }
+        }
+    }
+
+    private func notifyJs(event: String, payload: [String: Any]) {
+        let jsonBytes = try? JSONSerialization.data(withJSONObject: payload, options: [])
+        let jsonStr = jsonBytes != nil ? (String(data: jsonBytes!, encoding: .utf8) ?? "{}") : "{}"
+        DispatchQueue.main.async { [weak self] in
+            let js = "if(window.\(event)){window.\(event)(\(jsonStr));}"
+            self?.webView?.evaluateJavaScript(js, completionHandler: nil)
         }
     }
 
@@ -125,16 +371,25 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
                 "deviceType": dev.deviceType.rawValue
             ])
         }
-        if discovery.devices.isEmpty {
-            CAPLog.print("⚡️ [iOS Camera Hardware] ⚠️ Không tìm thấy bất kỳ camera nào trong hệ thống iOS!")
+
+        var usbPtpCameraName: String? = nil
+        var isUsbPtpConnected = false
+        if let cam = self.connectedCamera {
+            usbPtpCameraName = cam.name
+            isUsbPtpConnected = true
         }
+
         CAPLog.print("==============================================================")
         
         let responsePayload: [String: Any] = [
             "osVersion": osVersion,
             "deviceModel": deviceModel,
             "isOs17Plus": isOs17Plus,
-            "devices": summary
+            "devices": summary,
+            "usbPtpCamera": [
+                "isConnected": isUsbPtpConnected,
+                "name": usbPtpCameraName ?? ""
+            ]
         ]
         
         let jsonBytes = try? JSONSerialization.data(withJSONObject: responsePayload, options: [])
@@ -189,19 +444,11 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
         guard isStreaming else { return }
         streamBuffer.append(data)
 
-        // Process Sony MJPEG packets:
-        // Common Header: 8 bytes (0xFF, 0x01 = LiveView frame, 0x02 = Frame info)
-        // Payload Header: 128 bytes (0x24 0x35 0x68 0x79 = "$5hy")
-        //   Byte 12..14: JPEG size (24-bit uint, big-endian)
-        //   Byte 15: Padding size
-        // JPEG data: starts at offset 136, length is jpegSize
-        // Padding: starts at offset 136 + jpegSize, length is paddingSize
         while streamBuffer.count >= 136 {
             let b0 = streamBuffer[0]
             let b1 = streamBuffer[1]
 
             if b0 == 0xFF && b1 == 0x01 {
-                // Verify Sony start code "$5" at offset 8
                 if streamBuffer[8] == 0x24 && streamBuffer[9] == 0x35 {
                     let s0 = Int(streamBuffer[12])
                     let s1 = Int(streamBuffer[13])
@@ -215,7 +462,6 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
                             let jpegData = streamBuffer.subdata(in: 136..<(136 + jpegSize))
                             streamBuffer.removeSubrange(0..<totalPacketSize)
 
-                            // Throttle frame rate to ~25fps (0.038s) and ensure WebKit is not overloaded
                             let now = Date().timeIntervalSince1970
                             if now - lastFrameTime >= 0.038 && !isEvaluatingFrame {
                                 lastFrameTime = now
@@ -232,13 +478,11 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
                             }
                             continue
                         } else {
-                            // Wait for more data to complete current packet
                             break
                         }
                     }
                 }
             } else if b0 == 0xFF && b1 == 0x02 {
-                // Frame info packet
                 if streamBuffer[8] == 0x24 && streamBuffer[9] == 0x35 {
                     let infoSize = (Int(streamBuffer[12]) << 16) | (Int(streamBuffer[13]) << 8) | Int(streamBuffer[14])
                     let paddingSize = Int(streamBuffer[15])
@@ -252,7 +496,6 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
                 }
             }
 
-            // If packet header not matched, advance to next 0xFF
             var syncIndex: Int?
             for i in 1..<streamBuffer.count {
                 if streamBuffer[i] == 0xFF {

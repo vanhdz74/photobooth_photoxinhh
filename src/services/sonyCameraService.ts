@@ -34,6 +34,14 @@ export class SonyCameraService {
     if (typeof localStorage !== 'undefined') {
       this.cameraIp = localStorage.getItem('px_sony_camera_ip') || '192.168.122.1:8080';
     }
+
+    // Always register global native frame receiver (for both Wi-Fi & USB PTP)
+    if (typeof window !== 'undefined') {
+      (window as any).__onSonyLiveviewFrame = (frameDataUrl: string) => {
+        this.latestLiveviewFrame = frameDataUrl;
+        this.liveviewListeners.forEach((listener) => listener(frameDataUrl));
+      };
+    }
   }
 
   getCameraIp(): string {

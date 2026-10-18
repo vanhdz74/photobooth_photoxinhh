@@ -241,12 +241,25 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
     };
   }, [isOpen]);
 
-  // Subscribe to Sony Multi Terminal Status
+  // Subscribe to Sony Multi Terminal Status & USB PTP Photos
   useEffect(() => {
     if (!isOpen) return;
     const unsub = sonyMultiService.onStatusChange((st) => setSonyMultiStatus(st));
-    return () => unsub();
-  }, [isOpen]);
+    const unsubPhoto = sonyMultiService.onPhotoCaptured((photoUrl, fileName) => {
+      console.log('⚡️ [Sony Multi Photo Captured via USB PTP]:', fileName);
+      setCapturedPhotos((prev) => {
+        if (prev.length < requiredPhotos) {
+          return [...prev, photoUrl];
+        }
+        return prev;
+      });
+      if (soundEnabled) sounds.playSuccessChime();
+    });
+    return () => {
+      unsub();
+      unsubPhoto();
+    };
+  }, [isOpen, requiredPhotos, soundEnabled]);
 
   // Subscribe to Sony Camera Frame & Status
   useEffect(() => {
@@ -745,6 +758,9 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
     }
 
     setIsMock(false);
+    if (selectedDevice === 'sony-multi-camera') {
+      sonyMultiService.startUsbLiveview();
+    }
     cameraService.startStream(selectedDevice).then((stream) => {
       streamRef.current = stream;
       if (videoRef.current && stream) {
@@ -757,6 +773,9 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
       cameraService.stopStream();
       if (selectedDevice === 'sony-wifi-camera') {
         sonyCameraService.stopLiveview().catch(() => {});
+      }
+      if (selectedDevice === 'sony-multi-camera') {
+        sonyMultiService.stopUsbLiveview();
       }
     };
   }, [selectedDevice, isOpen, remoteStream]);
@@ -1236,10 +1255,12 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
                     <span>
                       🔌 Cổng Multi Sony{' '}
                       {sonyLiveFrame
-                        ? '(LiveView Wi-Fi)'
+                        ? '(LiveView: Cảm biến Sony)'
                         : streamRef.current
                         ? '(Capture Card 1080p)'
-                        : '(Chờ Luồng Video)'}
+                        : sonyMultiStatus.isUsbConnected
+                        ? `(USB PTP: ${sonyMultiStatus.connectedDeviceName || 'PC Remote'})`
+                        : '(Chờ Cáp USB / Wi-Fi)'}
                     </span>
                   </div>
                 );
