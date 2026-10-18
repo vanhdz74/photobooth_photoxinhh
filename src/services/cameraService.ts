@@ -2,6 +2,7 @@ import { SAMPLE_PORTRAITS } from '../templates/samplePhotos';
 import { realP2PService } from './realP2PService';
 import { sonyCameraService } from './sonyCameraService';
 import { hotFolderService } from './hotFolderService';
+import { sonyMultiService } from './sonyMultiService';
 
 export interface CameraDevice {
   deviceId: string;
@@ -64,9 +65,12 @@ export class CameraService {
             lower.includes('front') ||
             lower.includes('back') ||
             lower.includes('truedepth') ||
-            lower.includes('built-in');
+            lower.includes('built-in') ||
+            lower.includes('apple camera') ||
+            lower.includes('integrated');
 
-          const isUsb =
+          // Strict check for genuine USB video / HDMI Capture Card devices:
+          const hasUsbKeywords =
             lower.includes('usb') ||
             lower.includes('capture') ||
             lower.includes('cam link') ||
@@ -76,9 +80,12 @@ export class CameraService {
             lower.includes('avermedia') ||
             lower.includes('hagibis') ||
             lower.includes('ugreen') ||
-            lower.includes('video') ||
             lower.includes('external') ||
-            (!isInternal && videoDevices.length > 1);
+            lower.includes('fhd') ||
+            lower.includes('obs virtual');
+
+          // Only treat as USB if it's NOT internal and specifically matches USB/Capture keywords
+          const isUsb = !isInternal && hasUsbKeywords;
 
           let formattedLabel = raw;
           if (isUsb) {
@@ -100,6 +107,12 @@ export class CameraService {
         // Put USB devices on top of hardware list
         formattedDevices.sort((a, b) => (b.isUsb ? 1 : 0) - (a.isUsb ? 1 : 0));
         list.push(...formattedDevices);
+
+        // Sync real USB hardware status with sonyMultiService
+        const realUsbDev = formattedDevices.find((d) => d.isUsb);
+        if (realUsbDev) {
+          sonyMultiService.updateUsbStatus(true, realUsbDev.rawLabel || realUsbDev.label);
+        }
       }
     } catch (e) {
       console.warn('enumerateDevices error:', e);
@@ -145,12 +158,25 @@ export class CameraService {
       return null; // Signals to use mock rendering, Phone P2P, or Sony LiveView stream
     }
 
-    // For sony-multi-camera: Use USB video capture stream or default to front/back camera for live posing
+    // For sony-multi-camera: Use USB video capture stream or Wi-Fi LiveView
     let actualStreamId = deviceId;
     if (deviceId === 'sony-multi-camera') {
+      // 1. If Sony Wi-Fi is actively connected, start Wi-Fi LiveView
+      if (sonyCameraService.isConnected()) {
+        sonyCameraService.startLiveview().catch(() => {});
+        return null; // Signals modal to render sonyLiveFrame
+      }
+
+      // 2. Check for real USB Capture Card
       const devs = await this.getAvailableDevices(false);
       const usbDev = this.findFirstUsbDevice(devs);
-      actualStreamId = usbDev ? usbDev.deviceId : 'default';
+      if (usbDev) {
+        actualStreamId = usbDev.deviceId;
+      } else {
+        // No USB capture card found and Wi-Fi not connected yet.
+        // Return null so the UI can show the Sony Multi interactive assistant
+        return null;
+      }
     } else if (deviceId === 'hot-folder-camera') {
       const liveviewPref = hotFolderService.getLiveviewDeviceId();
       if (liveviewPref && liveviewPref !== 'hot-folder-camera' && liveviewPref !== 'none') {
@@ -162,7 +188,7 @@ export class CameraService {
 
     try {
       let stream: MediaStream | null = null;
-      // High-resolution request for crisp HDMI capture card & webcams (without strict min that breaks iOS portrait)
+      // High-resolution request for crisp HDMI capture card & webcams
       const highRes = {
         width: { ideal: 1920 },
         height: { ideal: 1080 },
@@ -174,46 +200,49 @@ export class CameraService {
 
       if (actualStreamId && actualStreamId !== 'default') {
         try {
-          // 1. Try with exact deviceId & 1080p ideal
+          // 1. Try with ideal deviceId & 1080p ideal (safe on iOS 17 & desktop)
           stream = await navigator.mediaDevices.getUserMedia({
             video: {
-              deviceId: { exact: actualStreamId },
+              deviceId: { ideal: actualStreamId },
               ...highRes,
             },
             audio: false,
           });
         } catch {
           try {
-            // 2. Try with exact deviceId & standard 720p ideal
+            // 2. Try with loose deviceId without resolution restrictions (vital for USB HDMI capture cards)
             stream = await navigator.mediaDevices.getUserMedia({
               video: {
-                deviceId: { exact: actualStreamId },
-                ...standardRes,
+                deviceId: actualStreamId,
               },
               audio: false,
             });
           } catch {
             try {
-              // 3. Try with loose deviceId constraint
+              // 3. Try standard 720p ideal
               stream = await navigator.mediaDevices.getUserMedia({
                 video: {
-                  deviceId: actualStreamId,
+                  deviceId: { ideal: actualStreamId },
                   ...standardRes,
                 },
                 audio: false,
               });
             } catch {
               try {
-                // 4. Try with ideal deviceId constraint
+                // 4. Try exact deviceId constraint
                 stream = await navigator.mediaDevices.getUserMedia({
                   video: {
-                    deviceId: { ideal: actualStreamId },
-                    ...standardRes,
+                    deviceId: { exact: actualStreamId },
                   },
                   audio: false,
                 });
-              } catch {
-                // 5. Fallback to general camera stream
+              } catch (exactErr) {
+                console.warn('Failed to open requested deviceId:', actualStreamId, exactErr);
+                // For sony-multi-camera, do not hijack with front camera if capture card failed
+                if (deviceId === 'sony-multi-camera') {
+                  return null;
+                }
+                // Fallback to general camera stream
                 stream = await navigator.mediaDevices.getUserMedia({
                   video: { ...standardRes },
                   audio: false,

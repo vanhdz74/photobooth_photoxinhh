@@ -53,14 +53,29 @@ export class SonyMultiService {
         if (ext) {
           this.isUsbConnected = true;
           this.connectedDeviceName = ext.name || 'Sony Multi USB Video';
-          this.lastMessage = `✅ Đã nhận diện cổng Multi / USB: ${this.connectedDeviceName}`;
+          this.lastMessage = `✅ Đã nhận diện Cáp HDMI Capture Card: ${this.connectedDeviceName}`;
         } else {
-          this.isUsbConnected = payload.devices.length > 0;
+          this.isUsbConnected = false;
           this.connectedDeviceName = null;
+          this.lastMessage = '⚠️ Chưa tìm thấy thiết bị HDMI Capture Card / UVC cắm qua cổng Type-C.';
         }
         this.notifyStatus();
       }
     };
+  }
+
+  /**
+   * Updates USB device status from web camera scan
+   */
+  updateUsbStatus(connected: boolean, deviceName: string | null = null) {
+    this.isUsbConnected = connected;
+    this.connectedDeviceName = deviceName;
+    if (connected) {
+      this.lastMessage = `✅ Đã kết nối thiết bị USB: ${deviceName || 'HDMI Capture Card'}`;
+    } else {
+      this.lastMessage = '⚠️ Chưa nhận diện được thiết bị USB Capture Card.';
+    }
+    this.notifyStatus();
   }
 
   getStatus(): SonyMultiStatus {

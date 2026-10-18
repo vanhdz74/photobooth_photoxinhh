@@ -1122,7 +1122,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
               fitMode === 'contain' ? 'pt-14 pb-28 sm:pb-32 px-3' : 'p-0'
             }`}
           >
-            {/* If Sony Multi is selected AND Sony Wi-Fi LiveView is active, display the live Sony frame! */}
+            {/* 1. If Sony Multi is selected AND Sony Wi-Fi LiveView is active, display the live Sony frame! */}
             {selectedDevice === 'sony-multi-camera' && sonyLiveFrame ? (
               <img
                 ref={sonyImgRef}
@@ -1136,6 +1136,73 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
                   transformOrigin: 'center center',
                 }}
               />
+            ) : selectedDevice === 'sony-multi-camera' && !streamRef.current ? (
+              /* Sony Multi Assistant when no video feed is detected yet */
+              <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center max-w-md mx-auto z-10 animate-in fade-in zoom-in-95 duration-200">
+                <div className="w-16 h-16 rounded-3xl bg-amber-500/20 border-2 border-amber-500/50 flex items-center justify-center mb-3 text-amber-400 shadow-xl">
+                  <Usb className="w-8 h-8 animate-pulse" />
+                </div>
+                <h3 className="text-base sm:text-lg font-bold text-white mb-1.5">
+                  Chưa Nhận Luồng Video từ Máy Ảnh Sony
+                </h3>
+                <p className="text-xs text-gray-300 mb-4 leading-relaxed">
+                  Cổng <strong>MULTI (Micro-USB)</strong> trên máy ảnh Sony chỉ truyền dữ liệu PTP và đọc thẻ nhớ, <strong>không xuất video UVC webcam</strong> qua cáp USB thông thường. Bạn hãy chọn 1 trong các cách sau:
+                </p>
+
+                <div className="w-full flex flex-col gap-2.5 text-xs">
+                  {/* Way 1: Wi-Fi LiveView */}
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setSonyMultiFeedback('📡 Đang kết nối Wi-Fi máy ảnh Sony...');
+                      const res = await sonyCameraService.testConnection();
+                      if (res.success) {
+                        await sonyCameraService.startLiveview().catch(() => {});
+                        setSonyMultiFeedback('✅ Đã kết nối Wi-Fi Sony! LiveView & Màn trập TÁCH đã sẵn sàng.');
+                      } else {
+                        setShowSonySettings(true);
+                      }
+                    }}
+                    className="w-full py-2.5 px-3 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white rounded-2xl font-bold flex items-center justify-center gap-2 shadow-lg cursor-pointer transition-all active:scale-98"
+                  >
+                    <Wifi className="w-4 h-4 text-white" />
+                    <span>1. Bật Wi-Fi Sony (Xem LiveView & Kêu Tách ngay)</span>
+                  </button>
+
+                  {/* Way 2: Rescan HDMI Capture Card */}
+                  <button
+                    type="button"
+                    onClick={handleScanUsb}
+                    disabled={isScanningUsb}
+                    className="w-full py-2.5 px-3 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white rounded-2xl font-bold flex items-center justify-center gap-2 shadow-lg cursor-pointer transition-all active:scale-98"
+                  >
+                    <Usb className="w-4 h-4 text-white" />
+                    <span>{isScanningUsb ? 'Đang quét...' : '2. Quét Cáp Micro-HDMI sang Capture Card (1080p)'}</span>
+                  </button>
+
+                  {/* Way 3: Mirror using iPad Camera */}
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                        streamRef.current = fallbackStream;
+                        if (videoRef.current) {
+                          videoRef.current.srcObject = fallbackStream;
+                          videoRef.current.play().catch(() => {});
+                        }
+                        setSonyMultiFeedback('📱 Đang dùng Camera iPad làm gương soi dáng (Bấm chụp vẫn kích máy ảnh Sony)');
+                      } catch {
+                        setSonyMultiFeedback('❌ Không thể mở camera iPad làm gương');
+                      }
+                    }}
+                    className="w-full py-2 px-3 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-2xl font-semibold flex items-center justify-center gap-2 border border-gray-700 cursor-pointer transition-all active:scale-98"
+                  >
+                    <Camera className="w-4 h-4 text-gray-300" />
+                    <span>3. Dùng tạm Camera iPad soi dáng (Chụp vẫn lưu thẻ SD Sony)</span>
+                  </button>
+                </div>
+              </div>
             ) : (
               <video
                 ref={(el) => {
@@ -1166,7 +1233,14 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
                 return (
                   <div className="absolute top-16 left-4 backdrop-blur-md text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-2 shadow-xl border border-amber-400/40 bg-amber-950/85">
                     <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-                    <span>🔌 Cổng Multi Sony {sonyLiveFrame ? '(LiveView Wi-Fi)' : activeDev.isUsb ? '(Capture Card HD)' : '(Cam Soi Gương)'}</span>
+                    <span>
+                      🔌 Cổng Multi Sony{' '}
+                      {sonyLiveFrame
+                        ? '(LiveView Wi-Fi)'
+                        : streamRef.current
+                        ? '(Capture Card 1080p)'
+                        : '(Chờ Luồng Video)'}
+                    </span>
                   </div>
                 );
               }
@@ -1576,7 +1650,13 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
               <div className="flex items-center gap-2">
                 <span className={`font-bold flex items-center gap-1.5 ${sonyMultiStatus.isUsbConnected ? 'text-emerald-400' : 'text-amber-400'}`}>
                   <span className={`w-2 h-2 rounded-full ${sonyMultiStatus.isUsbConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
-                  <span>{sonyMultiStatus.connectedDeviceName || (sonyMultiStatus.isUsbConnected ? 'Đã cắm cổng Type-C' : 'Chưa nhận diện')}</span>
+                  <span>
+                    {sonyMultiStatus.connectedDeviceName
+                      ? `Đã nhận: ${sonyMultiStatus.connectedDeviceName}`
+                      : sonyMultiStatus.isUsbConnected
+                      ? 'Đã cắm thiết bị USB'
+                      : 'Chưa cắm HDMI Capture Card'}
+                  </span>
                 </span>
                 <button
                   type="button"
