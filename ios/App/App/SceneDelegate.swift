@@ -225,7 +225,7 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
         if #available(iOS 13.0, *) {
             let downloadOptions: [ICDownloadOption: Any] = [
                 .downloadsDirectoryURL: tempDir,
-                .overwriteExistingFile: true
+                .overwrite: true
             ]
             file.requestDownload(options: downloadOptions) { [weak self] (downloadedFilename, error) in
                 guard let self = self else { return }
@@ -256,7 +256,7 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
         let filename = file.name ?? "sony_captured_\(Int(Date().timeIntervalSince1970)).jpg"
         if #available(iOS 13.0, *) {
             let options: [ICCameraItemThumbnailOption: Any] = [
-                kCGImageSourceThumbnailMaxPixelSize as ICCameraItemThumbnailOption: 2560
+                .imageSourceThumbnailMaxPixelSize: 2560
             ]
             file.requestThumbnailData(options: options) { [weak self] (data, _) in
                 guard let self = self, let photoData = data else { return }
