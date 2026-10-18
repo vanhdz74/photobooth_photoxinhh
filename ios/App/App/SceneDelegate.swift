@@ -15,7 +15,7 @@ class LeakAvoider: NSObject, WKScriptMessageHandler {
     }
 }
 
-class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSessionDataDelegate, ICDeviceBrowserDelegate, ICCameraDeviceDelegate {
+class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSessionDataDelegate, ICDeviceBrowserDelegate, ICDeviceDelegate, ICCameraDeviceDelegate {
     private var streamSession: URLSession?
     private var streamTask: URLSessionDataTask?
     private var streamBuffer = Data()
@@ -68,7 +68,7 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
         if deviceBrowser == nil {
             let browser = ICDeviceBrowser()
             browser.delegate = self
-            browser.browsedDeviceTypeMask = [.camera]
+            browser.browsedDeviceTypeMask = .camera
             browser.start()
             self.deviceBrowser = browser
             CAPLog.print("⚡️ [Native Sony USB] Initialized ICDeviceBrowser for USB PTP cameras")
@@ -135,7 +135,27 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
         }
     }
 
-    // MARK: - ICCameraDeviceDelegate
+    // MARK: - ICDeviceDelegate
+    func device(_ device: ICDevice, didOpenSessionWithError error: Error?) {
+        if let error = error {
+            CAPLog.print("⚡️ [Native Sony USB] Failed to open device session: \(error.localizedDescription)")
+            return
+        }
+        CAPLog.print("⚡️ [Native Sony USB] Session opened successfully for: \(device.name ?? "Device")")
+    }
+
+    func device(_ device: ICDevice, didCloseSessionWithError error: Error?) {
+        CAPLog.print("⚡️ [Native Sony USB] Session closed for: \(device.name ?? "Device")")
+    }
+
+    func didRemove(_ device: ICDevice) {
+        if let camera = device as? ICCameraDevice, camera == self.connectedCamera {
+            stopUsbLiveview()
+            self.connectedCamera = nil
+            notifyJs(event: "__onSonyUsbDeviceDisconnected", payload: ["isConnected": false])
+        }
+    }
+
     func deviceDidBecomeReady(_ device: ICDevice) {
         guard let camera = device as? ICCameraDevice else { return }
         CAPLog.print("⚡️ [Native Sony USB] Camera Session Ready: '\(camera.name ?? "")'")
@@ -147,14 +167,7 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
         notifyJs(event: "__onSonyUsbDeviceReady", payload: payload)
     }
 
-    func didRemoveDevice(_ device: ICDevice) {
-        if let camera = device as? ICCameraDevice, camera == self.connectedCamera {
-            stopUsbLiveview()
-            self.connectedCamera = nil
-            notifyJs(event: "__onSonyUsbDeviceDisconnected", payload: ["isConnected": false])
-        }
-    }
-
+    // MARK: - ICCameraDeviceDelegate
     func cameraDevice(_ camera: ICCameraDevice, didAdd items: [ICCameraItem]) {
         CAPLog.print("⚡️ [Native Sony USB] Camera added \(items.count) item(s)")
         guard let lastItem = items.last as? ICCameraFile else { return }
@@ -172,6 +185,38 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
                 }
             }
         }
+    }
+
+    func cameraDevice(_ camera: ICCameraDevice, didRemove items: [ICCameraItem]) {
+        CAPLog.print("⚡️ [Native Sony USB] Camera removed \(items.count) item(s)")
+    }
+
+    func cameraDevice(_ camera: ICCameraDevice, didReceiveThumbnail thumbnail: CGImage?, for item: ICCameraItem, error: Error?) {
+    }
+
+    func cameraDevice(_ camera: ICCameraDevice, didReceiveMetadata metadata: [AnyHashable : Any]?, for item: ICCameraItem, error: Error?) {
+    }
+
+    func cameraDevice(_ camera: ICCameraDevice, didRenameItems items: [ICCameraItem]) {
+    }
+
+    func cameraDeviceDidChangeCapability(_ camera: ICCameraDevice) {
+        CAPLog.print("⚡️ [Native Sony USB] Camera capability changed")
+    }
+
+    func cameraDevice(_ camera: ICCameraDevice, didReceivePTPEvent eventData: Data) {
+    }
+
+    func deviceDidBecomeReady(withCompleteContentCatalog device: ICCameraDevice) {
+        CAPLog.print("⚡️ [Native Sony USB] Camera ready with complete content catalog: \(device.name ?? "")")
+    }
+
+    func cameraDeviceDidRemoveAccessRestriction(_ device: ICDevice) {
+        CAPLog.print("⚡️ [Native Sony USB] Access restriction removed")
+    }
+
+    func cameraDeviceDidEnableAccessRestriction(_ device: ICDevice) {
+        CAPLog.print("⚡️ [Native Sony USB] Access restriction enabled")
     }
 
     // MARK: - USB PTP Live View & Shutter Control (Sony PC Remote Mechanism)
@@ -204,7 +249,7 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
                 self.isPtpPolling = false
 
                 if self.isPtpStreaming {
-                    let dataToScan = (outData != nil && !outData!.isEmpty) ? outData! : responseData
+                    let dataToScan = !outData.isEmpty ? outData : responseData
                     if let jpeg = self.extractJpeg(from: dataToScan) {
                         let base64 = jpeg.base64EncodedString()
                         DispatchQueue.main.async {
@@ -287,30 +332,30 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
             return
         }
 
-        CAPLog.print("⚡️ [Native Sony USB] Triggering PTP Shutter...")
-        // 1. Try standard requestTakePTPPhoto
-        camera.requestTakePTPPhoto { [weak self] error in
-            guard let self = self else { return }
-            if let err = error {
-                CAPLog.print("⚡️ [Native Sony USB] requestTakePTPPhoto error: \(err.localizedDescription), trying vendor PTP opcode 0x9207...")
-                // Fallback to Sony PTP vendor opcode 0x9207 (Full press shutter)
-                let pressCmd = self.buildPtpCommand(opCode: 0x9207, param1: 0x0002)
-                if #available(iOS 13.0, *) {
-                    camera.requestSendPTPCommand(pressCmd, outData: nil) { (_, _, _) in
-                        // Release shutter after 200ms
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                            let relCmd = self.buildPtpCommand(opCode: 0x9209, param1: 0x0002)
-                            camera.requestSendPTPCommand(relCmd, outData: nil, completion: { _, _, _ in })
-                        }
+        CAPLog.print("⚡️ [Native Sony USB] Triggering Sony PTP Shutter...")
+        let pressCmd = buildPtpCommand(opCode: 0x9207, param1: 0x0002)
+        if #available(iOS 13.0, *) {
+            camera.requestSendPTPCommand(pressCmd, outData: nil) { [weak self] (_, _, error) in
+                guard let self = self else { return }
+                if let err = error {
+                    CAPLog.print("⚡️ [Native Sony USB] Shutter press error: \(err.localizedDescription)")
+                    DispatchQueue.main.async {
+                        let js = "if(window.__onSonyUsbShutterResult){window.__onSonyUsbShutterResult(false, '\(err.localizedDescription)');}"
+                        self.webView?.evaluateJavaScript(js, completionHandler: nil)
+                    }
+                } else {
+                    CAPLog.print("✅ [Native Sony USB] Shutter triggered successfully via PTP!")
+                    DispatchQueue.main.async {
+                        let js = "if(window.__onSonyUsbShutterResult){window.__onSonyUsbShutterResult(true, null);}"
+                        self.webView?.evaluateJavaScript(js, completionHandler: nil)
                     }
                 }
-            } else {
-                CAPLog.print("✅ [Native Sony USB] Shutter triggered successfully via PTP!")
-            }
 
-            DispatchQueue.main.async {
-                let js = "if(window.__onSonyUsbShutterResult){window.__onSonyUsbShutterResult(true, null);}"
-                self.webView?.evaluateJavaScript(js, completionHandler: nil)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                    guard let self = self, let cam = self.connectedCamera else { return }
+                    let relCmd = self.buildPtpCommand(opCode: 0x9209, param1: 0x0002)
+                    cam.requestSendPTPCommand(relCmd, outData: nil) { _, _, _ in }
+                }
             }
         }
     }
