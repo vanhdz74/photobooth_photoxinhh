@@ -208,20 +208,101 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
     // MARK: - ICCameraDeviceDelegate
     func cameraDevice(_ camera: ICCameraDevice, didAdd items: [ICCameraItem]) {
         CAPLog.print("⚡️ [Native Sony USB] Camera added \(items.count) item(s)")
-        guard let lastItem = items.last as? ICCameraFile else { return }
-        let ext = (lastItem.name ?? "").lowercased()
-        if ext.hasSuffix(".jpg") || ext.hasSuffix(".jpeg") || ext.hasSuffix(".png") {
-            CAPLog.print("📸 [Native Sony USB] New Photo file added: '\(lastItem.name ?? "")'")
-            lastItem.requestThumbnailData(options: nil) { [weak self] (data, error) in
-                if let photoData = data {
-                    let base64 = photoData.base64EncodedString()
-                    let dataUrl = "data:image/jpeg;base64,\(base64)"
-                    DispatchQueue.main.async {
-                        let js = "if(window.__onSonyUsbPhotoCaptured){window.__onSonyUsbPhotoCaptured('\(dataUrl)', '\(lastItem.name ?? "photo.jpg")');}"
-                        self?.webView?.evaluateJavaScript(js, completionHandler: nil)
-                    }
+        // Find latest JPEG/PNG photo
+        let photoItems = items.compactMap { $0 as? ICCameraFile }.filter { item in
+            let ext = (item.name ?? "").lowercased()
+            return ext.hasSuffix(".jpg") || ext.hasSuffix(".jpeg") || ext.hasSuffix(".png")
+        }
+        guard let lastItem = photoItems.last ?? (items.last as? ICCameraFile) else { return }
+        CAPLog.print("📸 [Native Sony USB] New Photo file added: '\(lastItem.name ?? "")'")
+        self.fetchFullResolutionPhoto(file: lastItem)
+    }
+
+    private func fetchFullResolutionPhoto(file: ICCameraFile) {
+        let filename = file.name ?? "sony_captured_\(Int(Date().timeIntervalSince1970)).jpg"
+        let tempDir = FileManager.default.temporaryDirectory
+        
+        if #available(iOS 13.0, *) {
+            let downloadOptions: [ICDownloadOption: Any] = [
+                .downloadsDirectoryURL: tempDir,
+                .overwriteExistingFile: true
+            ]
+            file.requestDownload(options: downloadOptions) { [weak self] (downloadedFilename, error) in
+                guard let self = self else { return }
+                if let err = error {
+                    CAPLog.print("⚠️ [Native Sony USB] requestDownload error: \(err.localizedDescription), trying high-res thumbnail...")
+                    self.fetchThumbnailFallback(file: file)
+                    return
+                }
+                
+                let savedName = downloadedFilename ?? filename
+                let fileUrl = tempDir.appendingPathComponent(savedName)
+                CAPLog.print("📸 [Native Sony USB] Photo downloaded to temp: \(fileUrl.path)")
+                
+                if let data = try? Data(contentsOf: fileUrl) {
+                    let optimized = self.optimizePhotoDataForWeb(data: data)
+                    self.sendPhotoToJs(data: optimized, filename: savedName)
+                    try? FileManager.default.removeItem(at: fileUrl)
+                } else {
+                    self.fetchThumbnailFallback(file: file)
                 }
             }
+        } else {
+            self.fetchThumbnailFallback(file: file)
+        }
+    }
+
+    private func fetchThumbnailFallback(file: ICCameraFile) {
+        let filename = file.name ?? "sony_captured_\(Int(Date().timeIntervalSince1970)).jpg"
+        if #available(iOS 13.0, *) {
+            let options: [ICCameraItemThumbnailOption: Any] = [
+                kCGImageSourceThumbnailMaxPixelSize as ICCameraItemThumbnailOption: 2560
+            ]
+            file.requestThumbnailData(options: options) { [weak self] (data, _) in
+                guard let self = self, let photoData = data else { return }
+                let optimized = self.optimizePhotoDataForWeb(data: photoData)
+                self.sendPhotoToJs(data: optimized, filename: filename)
+            }
+        } else {
+            file.requestThumbnailData(options: nil) { [weak self] (data, _) in
+                guard let self = self, let photoData = data else { return }
+                let optimized = self.optimizePhotoDataForWeb(data: photoData)
+                self.sendPhotoToJs(data: optimized, filename: filename)
+            }
+        }
+    }
+
+    private func optimizePhotoDataForWeb(data: Data) -> Data {
+        guard let image = UIImage(data: data) else { return data }
+        let maxDimension: CGFloat = 2560.0
+        let size = image.size
+        
+        if size.width <= maxDimension && size.height <= maxDimension {
+            return image.jpegData(compressionQuality: 0.92) ?? data
+        }
+        
+        var targetSize = size
+        if size.width > size.height {
+            targetSize = CGSize(width: maxDimension, height: round((size.height / size.width) * maxDimension))
+        } else {
+            targetSize = CGSize(width: round((size.width / size.height) * maxDimension), height: maxDimension)
+        }
+        
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1.0
+        let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
+        let resized = renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+        return resized.jpegData(compressionQuality: 0.92) ?? data
+    }
+
+    private func sendPhotoToJs(data: Data, filename: String) {
+        let base64 = data.base64EncodedString()
+        let dataUrl = "data:image/jpeg;base64,\(base64)"
+        DispatchQueue.main.async { [weak self] in
+            let js = "if(window.__onSonyUsbPhotoCaptured){window.__onSonyUsbPhotoCaptured('\(dataUrl)', '\(filename)');}"
+            self?.webView?.evaluateJavaScript(js, completionHandler: nil)
         }
     }
 

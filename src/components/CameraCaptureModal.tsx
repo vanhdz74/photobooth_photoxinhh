@@ -79,6 +79,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
   const [showSonyMultiSettings, setShowSonyMultiSettings] = useState(false);
   const [sonyMultiStatus, setSonyMultiStatus] = useState<SonyMultiStatus>(sonyMultiService.getStatus());
   const [sonyMultiFeedback, setSonyMultiFeedback] = useState<string | null>(null);
+  const [isCapturingCameraPhoto, setIsCapturingCameraPhoto] = useState(false);
 
   const [capturedPhotos, setCapturedPhotos] = useState<string[]>([]);
   const [previewPhotoIndex, setPreviewPhotoIndex] = useState<number | null>(null); // Enlarged Photo Inspector
@@ -253,14 +254,20 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
       }
     });
     const unsubPhoto = sonyMultiService.onPhotoCaptured((photoUrl, fileName) => {
-      console.log('⚡️ [Sony Multi Photo Captured via USB PTP]:', fileName);
+      console.log('⚡️ [Sony Multi Photo Captured via External Trigger]:', fileName);
       setCapturedPhotos((prev) => {
         if (prev.length < requiredPhotos) {
-          return [...prev, photoUrl];
+          const next = [...prev, photoUrl];
+          if (next.length === requiredPhotos && soundEnabled) {
+            sounds.playSuccessChime();
+          }
+          return next;
         }
         return prev;
       });
-      if (soundEnabled) sounds.playSuccessChime();
+      setShowFlash(true);
+      setTimeout(() => setShowFlash(false), 120);
+      if (soundEnabled) sounds.playShutterSound();
     });
     return () => {
       unsub();
@@ -368,27 +375,22 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
       photoData = await cameraService.captureFromSonyCamera();
     } else if (selectedDevice === 'sony-multi-camera') {
       try {
-        // 1. Try to get real high-res shot from camera (via Sony Wi-Fi or Hot Folder, fast 2.5s timeout)
-        const realPhoto = await sonyMultiService.captureHighResPhoto(2500);
-        if (realPhoto) {
-          photoData = realPhoto;
-          setCaptureError(null);
-        } else {
-          // Attempt shutter trigger (Sony Wi-Fi actTakePicture or USB)
-          const trig = await sonyMultiService.triggerShutter();
-          if (trig.warning && !trig.success) {
-            setCaptureError(`⚠️ ${trig.warning}`);
+        // Trigger camera and await high-resolution photo from camera
+        photoData = await sonyMultiService.triggerAndCapturePhoto(
+          7000,
+          async () => {
+            let rawPhoto = '';
+            if (videoRef.current && (videoRef.current.videoWidth > 0 || videoRef.current.srcObject)) {
+              rawPhoto = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox, zoomLevel);
+            } else if (sonyLiveFrame) {
+              rawPhoto = sonyLiveFrame;
+            } else {
+              rawPhoto = await cameraService.getMockPhoto();
+            }
+            return sonyMultiService.enhanceImageSharpness(rawPhoto);
           }
-          let rawPhoto = '';
-          if (videoRef.current && (videoRef.current.videoWidth > 0 || videoRef.current.srcObject)) {
-            rawPhoto = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox, zoomLevel);
-          } else if (sonyLiveFrame) {
-            rawPhoto = sonyLiveFrame;
-          } else {
-            rawPhoto = await cameraService.getMockPhoto();
-          }
-          photoData = await sonyMultiService.enhanceImageSharpness(rawPhoto);
-        }
+        );
+        setCaptureError(null);
       } catch (err: any) {
         console.warn('Sony multi capture error, falling back:', err);
         setCaptureError(err?.message || 'Lỗi chụp từ cổng Multi');
@@ -396,7 +398,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
           const rawPhoto = await cameraService.captureFromVideoElement(videoRef.current, isMirrored, containerBox, zoomLevel);
           photoData = await sonyMultiService.enhanceImageSharpness(rawPhoto);
         } else if (sonyLiveFrame) {
-          photoData = sonyLiveFrame;
+          photoData = await sonyMultiService.enhanceImageSharpness(sonyLiveFrame);
         } else {
           photoData = await cameraService.getMockPhoto();
         }
@@ -438,6 +440,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
 
     let photoData = '';
     try {
+      setIsCapturingCameraPhoto(true);
       photoData = await captureCurrentFrame();
     } catch (err: unknown) {
       console.error('Capture error:', err);
@@ -446,6 +449,8 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
       setShowFlash(false);
       setCountdown(null);
       return null;
+    } finally {
+      setIsCapturingCameraPhoto(false);
     }
 
     // Snappy flash reset (120ms) - feels instant and avoids lag
@@ -805,6 +810,32 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
       }
     });
 
+    const unsubP2P = realP2PService.onMessage((msg) => {
+      if (msg.type === 'SHUTTER_TRIGGER') {
+        if (!isShooting) {
+          if (capturedPhotos.length < requiredPhotos || retakeTargetIndex !== null) {
+            startCaptureProcess();
+          } else {
+            handleFinish();
+          }
+        }
+      } else if (msg.type === 'PHOTO_TRANSFER' && msg.payload?.photoDataUrl) {
+        setCapturedPhotos((prev) => {
+          if (prev.length < requiredPhotos) {
+            const next = [...prev, msg.payload.photoDataUrl];
+            if (next.length === requiredPhotos && soundEnabled) {
+              sounds.playSuccessChime();
+            }
+            return next;
+          }
+          return prev;
+        });
+        setShowFlash(true);
+        setTimeout(() => setShowFlash(false), 120);
+        if (soundEnabled) sounds.playShutterSound();
+      }
+    });
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Space' || e.code === 'Enter') {
         e.preventDefault();
@@ -835,6 +866,7 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
 
     return () => {
       unsubShutter();
+      unsubP2P();
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [isOpen, isShooting, capturedPhotos.length, requiredPhotos, retakeTargetIndex, previewPhotoIndex, startCaptureProcess, onClose]);
@@ -1513,6 +1545,21 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
             </h4>
             <p className="text-xs text-gray-300 max-w-sm mb-3">
               Ảnh độ nét cao đang được tải tự động vào Photobooth.
+            </p>
+          </div>
+        )}
+
+        {/* 5.1 CAMERA CAPTURE RECEIVING SPINNER (USB PTP & Wi-Fi) */}
+        {isCapturingCameraPhoto && !isWaitingHotFolder && (
+          <div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-black/75 backdrop-blur-xs p-6 text-center pointer-events-none animate-in fade-in duration-150">
+            <div className="w-16 h-16 rounded-full bg-pink-500/25 border-2 border-pink-400 flex items-center justify-center animate-spin mb-3 shadow-[0_0_30px_rgba(244,63,94,0.6)]">
+              <RefreshCw className="w-8 h-8 text-pink-300" />
+            </div>
+            <h4 className="text-base sm:text-lg font-bold text-white mb-1">
+              📸 Máy ảnh đang chụp & truyền ảnh về app...
+            </h4>
+            <p className="text-xs text-pink-200/90 max-w-sm">
+              Đang tải ảnh độ phân giải cao từ cảm biến máy ảnh
             </p>
           </div>
         )}

@@ -31,6 +31,12 @@ export class SonyMultiService {
   private lastMessage: string | null = null;
   private dcimPhotoUrl: string | null = null;
   private listeners: SonyMultiStatusListener[] = [];
+  private photoListeners: ((photoUrl: string, fileName: string) => void)[] = [];
+  private waitingPhotoResolvers: Array<{
+    resolve: (photoUrl: string) => void;
+    reject: (err: any) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }> = [];
 
   constructor() {
     if (typeof localStorage !== 'undefined') {
@@ -103,11 +109,21 @@ export class SonyMultiService {
       this.dcimPhotoUrl = dataUrl;
       this.lastMessage = `✅ Đã nhận ảnh gốc từ máy ảnh Sony: ${fileName}`;
       this.notifyStatus();
+
+      // Check if an active capture request from app button is waiting for this photo
+      if (this.waitingPhotoResolvers.length > 0) {
+        const item = this.waitingPhotoResolvers.shift();
+        if (item) {
+          clearTimeout(item.timer);
+          item.resolve(dataUrl);
+          return;
+        }
+      }
+
+      // External click (hardware shutter button on camera body / hand cable release)
       this.photoListeners.forEach((l) => l(dataUrl, fileName));
     };
   }
-
-  private photoListeners: ((photoUrl: string, fileName: string) => void)[] = [];
 
   onPhotoCaptured(listener: (photoUrl: string, fileName: string) => void): () => void {
     this.photoListeners.push(listener);
@@ -320,6 +336,86 @@ export class SonyMultiService {
       warning:
         'Chưa gửi được lệnh bấm chụp cơ học tới máy ảnh. Bạn có thể bật Wi-Fi "Điều khiển thông minh" trên máy ảnh Sony, cắm Dây bấm mềm vào cổng Multi, hoặc cắm cáp HDMI qua Capture Card để chụp!',
     };
+  }
+
+  /**
+   * Commands Sony camera to physically shoot and awaits real captured photo from camera
+   */
+  async triggerAndCapturePhoto(
+    timeoutMs = 7000,
+    fallbackGetter?: () => Promise<string>
+  ): Promise<string> {
+    // 1. If Sony Wi-Fi is actively connected, take photo via Wi-Fi Remote API
+    if (sonyCameraService.isConnected()) {
+      try {
+        const photo = await sonyCameraService.takePhoto();
+        if (photo) {
+          this.dcimPhotoUrl = photo;
+          this.lastMessage = '✅ Đã tải ảnh gốc từ máy ảnh Sony qua Wi-Fi!';
+          this.notifyStatus();
+          return photo;
+        }
+      } catch (wifiErr) {
+        console.warn('Sony Wi-Fi takePhoto failed:', wifiErr);
+      }
+    }
+
+    // 2. If Hot Folder is watching, capture via hot folder
+    const hfStatus = hotFolderService.getStatus();
+    if (hfStatus.isWatching && hfStatus.folderPath) {
+      try {
+        const hfPhoto = await hotFolderService.capturePhoto(timeoutMs);
+        if (hfPhoto) {
+          this.dcimPhotoUrl = hfPhoto;
+          return hfPhoto;
+        }
+      } catch (hfErr) {
+        console.warn('Hot folder capture failed:', hfErr);
+      }
+    }
+
+    // 3. If USB PTP is connected, command shutter and await downloaded photo from native bridge
+    if (this.isUsbConnected) {
+      return new Promise<string>(async (resolve, reject) => {
+        const timer = setTimeout(async () => {
+          this.waitingPhotoResolvers = this.waitingPhotoResolvers.filter((r) => r.timer !== timer);
+          console.warn('[Sony USB] Photo capture timed out, using fallback frame...');
+          if (fallbackGetter) {
+            try {
+              const fallbackPhoto = await fallbackGetter();
+              resolve(fallbackPhoto);
+              return;
+            } catch (fbErr) {
+              console.warn('Fallback capture error:', fbErr);
+            }
+          }
+          if (this.dcimPhotoUrl) {
+            resolve(this.dcimPhotoUrl);
+          } else {
+            reject(new Error('Hết thời gian chờ ảnh từ máy ảnh Sony qua USB. Vui lòng thử lại!'));
+          }
+        }, timeoutMs);
+
+        this.waitingPhotoResolvers.push({ resolve, reject, timer });
+
+        // Trigger shutter over USB PTP
+        try {
+          const res = await this.triggerUsbShutter();
+          if (!res.success) {
+            console.warn('triggerUsbShutter warning:', res.error);
+          }
+        } catch (trigErr) {
+          console.warn('triggerUsbShutter error:', trigErr);
+        }
+      });
+    }
+
+    // 4. Fallback if no external camera protocol responded
+    if (fallbackGetter) {
+      return fallbackGetter();
+    }
+
+    throw new Error('Chưa kết nối máy ảnh hoặc không thể chụp ảnh.');
   }
 
   /**
