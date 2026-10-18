@@ -68,7 +68,9 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
         if deviceBrowser == nil {
             let browser = ICDeviceBrowser()
             browser.delegate = self
-            browser.browsedDeviceTypeMask = .camera
+            if #available(iOS 15.2, *) {
+                browser.browsedDeviceTypeMask = .camera
+            }
             browser.start()
             self.deviceBrowser = browser
             CAPLog.print("⚡️ [Native Sony USB] Initialized ICDeviceBrowser for USB PTP cameras")
