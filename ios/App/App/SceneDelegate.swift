@@ -620,12 +620,14 @@ class MainViewController: CAPBridgeViewController, WKScriptMessageHandler, URLSe
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
                         guard let self = self, let cam2 = self.connectedCamera else { return }
                         self.sendSonyControlDevice(camera: cam2, controlCode: 0xD2C2, value: 0x0001) { [weak self] (_, _) in
+                            guard let self = self else { return }
                             CAPLog.print("⚡️ [Native Sony USB] S2 Released")
 
                             // Release S1 Half-Press after 150ms
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
                                 guard let self = self, let cam3 = self.connectedCamera else { return }
                                 self.sendSonyControlDevice(camera: cam3, controlCode: 0xD2C1, value: 0x0001) { [weak self] (_, _) in
+                                    guard let self = self else { return }
                                     CAPLog.print("⚡️ [Native Sony USB] S1 Released - Shutter Cycle Completed")
                                     self.scheduleLiveviewResume()
                                 }
